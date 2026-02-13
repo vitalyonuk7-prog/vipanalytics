@@ -1,0 +1,2688 @@
+/*************************************************
+ * Code.gs — ENHANCED BACKEND для Slotornado
+ * ✅ FIX: FTD deduplication
+ * ✅ FIX: METRICS sheet support
+ * ✅ FIX: Player Profiling
+ *************************************************/
+
+/******************** MENU ********************/
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu('🌪️ Slotornado')
+    .addItem('📊 Open App', 'openDepositApp')
+    .addSeparator()
+    .addItem('🔍 Діагностика', 'diagnosticSheets')
+    .addToUi();
+}
+
+function openDepositApp() {
+  var html = HtmlService.createHtmlOutputFromFile('App')
+    .setWidth(1600).setHeight(900);
+  SpreadsheetApp.getUi().showModelessDialog(html, 'Slotornado Analytics');
+}
+
+/******************** WEB ENTRYPOINT ********************/
+function doGet(e) {
+  return HtmlService.createHtmlOutputFromFile('App')
+    .setTitle('Slotornado Analytics')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+/******************** TYPE MAPPING ********************/
+function getTypeMapping() {
+  var mapping = {};
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('[TYPE]');
+    if (sheet) {
+      var data = sheet.getDataRange().getValues();
+      for (var i = 1; i < data.length; i++) {
+        var tag = String(data[i][0] || '').toLowerCase().trim();
+        var type = String(data[i][1] || '').trim();
+        if (tag && type) mapping[tag] = type;
+      }
+    }
+  } catch (e) {}
+  return mapping;
+}
+
+/******************** RETENTION WEEKLY ********************/
+
+/**
+ * Get vocabulary mapping for metrics
+ */
+function getVocabulary() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var vocabSheet = ss.getSheetByName('VOCABULARY');
+    
+    if (!vocabSheet) {
+      Logger.log('VOCABULARY sheet not found - using empty vocabulary');
+      return {};
+    }
+    
+    var data = vocabSheet.getDataRange().getValues();
+    var vocabulary = {};
+    
+    Logger.log('=== Reading VOCABULARY Sheet ===');
+    Logger.log('Total rows: ' + data.length);
+    
+    // Skip header row (row 0)
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      
+      // Skip empty rows
+      if (!row[0]) continue;
+      
+      var metricId = String(row[0]).trim();
+      var metricName = row[1] ? String(row[1]).trim() : metricId;
+      var metricType = row[2] ? String(row[2]).trim().toLowerCase() : '';
+      var filterFlag = row[3] ? String(row[3]).trim().toLowerCase() : '';
+      
+      // Only add metrics with valid types
+      if (metricType === 'dash sum' || metricType === 'dash count' || metricType === 'dash pie') {
+        vocabulary[metricId] = {
+          id: metricId,
+          name: metricName,
+          type: metricType,
+          filter: filterFlag === 'filter' ? 'filter' : ''
+        };
+        
+        Logger.log('Added metric: ' + metricId + ' → ' + metricName + ' (' + metricType + ')' + (filterFlag === 'filter' ? ' [FILTER]' : ''));
+      }
+    }
+    
+    Logger.log('Vocabulary loaded: ' + Object.keys(vocabulary).length + ' metrics');
+    return vocabulary;
+    
+  } catch (error) {
+    Logger.log('ERROR reading vocabulary: ' + error.toString());
+    return {};
+  }
+}
+
+
+/**
+ * Get VIP Dashboard data
+ */
+function getVIPDashboardData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    Logger.log('=== VIP Dashboard Data Loading ===');
+    
+    // Try new dynamic system first (with prefix)
+    var dynamicData = getVIPGroupData('vip_dashboard');
+    
+    if (dynamicData && !dynamicData.error && dynamicData.players && dynamicData.players.length > 0) {
+      Logger.log('Using dynamic system - found ' + dynamicData.players.length + ' players');
+      
+      // Split by vipType for metrics calculation
+      var vipPlayers = [];
+      var silentVipPlayers = [];
+      
+      dynamicData.players.forEach(function(player) {
+        if (player.vipType === 'VIP') {
+          vipPlayers.push(player);
+        } else if (player.vipType === 'SILENT VIP') {
+          silentVipPlayers.push(player);
+        }
+      });
+      
+      Logger.log('VIP players: ' + vipPlayers.length);
+      Logger.log('Silent VIP players: ' + silentVipPlayers.length);
+      
+      // Calculate metrics
+      var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, dynamicData.vocabulary);
+      Logger.log('Metrics calculated successfully');
+      
+      return {
+        playerCounts: {
+          vip: vipPlayers.length,
+          silentVip: silentVipPlayers.length,
+          total: dynamicData.players.length
+        },
+        metrics: metrics,
+        vocabulary: dynamicData.vocabulary,
+        allPlayers: {
+          vip: vipPlayers,
+          silentVip: silentVipPlayers
+        }
+      };
+    }
+    
+    // Fallback to old system (sheets without prefix)
+    Logger.log('Dynamic system not found, trying legacy sheet names...');
+    var vipSheet = ss.getSheetByName('VIP');
+    var silentVipSheet = ss.getSheetByName('SILENT VIP');
+    
+    Logger.log('VIP Sheet: ' + (vipSheet ? 'found' : 'NOT FOUND'));
+    Logger.log('Silent VIP Sheet: ' + (silentVipSheet ? 'found' : 'NOT FOUND'));
+    
+    if (!vipSheet || !silentVipSheet) {
+      return {
+        error: 'VIP sheets not found. Please ensure sheets are named either:\n' +
+               '1. "(VIP DASHBOARD) VIP" and "(VIP DASHBOARD) SILENT VIP" (recommended), or\n' +
+               '2. "VIP" and "SILENT VIP" (legacy)'
+      };
+    }
+    
+    // Get vocabulary
+    var vocabulary = getVocabulary();
+    Logger.log('Vocabulary metrics count: ' + Object.keys(vocabulary).length);
+    
+    // Get VIP players
+    var vipPlayers = getVIPSheetData(vipSheet);
+    Logger.log('VIP players loaded: ' + vipPlayers.length);
+    
+    // Get SILENT VIP players
+    var silentVipPlayers = getVIPSheetData(silentVipSheet);
+    Logger.log('Silent VIP players loaded: ' + silentVipPlayers.length);
+    
+    if (vipPlayers.length === 0 && silentVipPlayers.length === 0) {
+      return {
+        error: 'No players found in VIP or SILENT VIP sheets'
+      };
+    }
+    
+    // Calculate metrics
+    var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary);
+    Logger.log('Metrics calculated successfully');
+    
+    // CRITICAL: Return allPlayers for client-side filtering (like Retention Rate)
+    var result = {
+      playerCounts: {
+        vip: vipPlayers.length,
+        silentVip: silentVipPlayers.length,
+        total: vipPlayers.length + silentVipPlayers.length
+      },
+      vocabulary: vocabulary,
+      metrics: metrics,
+      allPlayers: {
+        vip: vipPlayers,
+        silentVip: silentVipPlayers
+      }
+    };
+    
+    Logger.log('=== VIP Dashboard Data Ready ===');
+    Logger.log('Returning ' + result.allPlayers.vip.length + ' VIP + ' + result.allPlayers.silentVip.length + ' Silent VIP players');
+    
+    return result;
+    
+  } catch (error) {
+    Logger.log('ERROR in getVIPDashboardData: ' + error.toString());
+    return {
+      error: 'Error loading VIP data: ' + error.toString()
+    };
+  }
+}
+
+/**
+ * Calculate VIP metrics based on vocabulary
+ */
+function calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary) {
+  var allPlayers = vipPlayers.concat(silentVipPlayers);
+  
+  var metrics = {
+    total: {
+      count: allPlayers.length,
+      vipCount: vipPlayers.length,
+      silentVipCount: silentVipPlayers.length
+    },
+    sums: {},
+    pies: {}
+  };
+  
+  Logger.log('=== Calculating VIP Metrics ===');
+  Logger.log('Total players: ' + allPlayers.length + ' (VIP: ' + vipPlayers.length + ', Silent: ' + silentVipPlayers.length + ')');
+  
+  var processedCount = 0;
+  
+  // Process each metric from vocabulary
+  Object.keys(vocabulary).forEach(function(metricId) {
+    var metric = vocabulary[metricId];
+    var metricType = metric.type;
+    
+    // Only process dash sum, dash count, and dash pie
+    if (metricType !== 'dash sum' && metricType !== 'dash count' && metricType !== 'dash pie') {
+      return; // Skip this metric
+    }
+    
+    processedCount++;
+    
+    if (metricType === 'dash pie') {
+      // Calculate distribution for pie chart
+      var totalDist = {};
+      var vipDist = {};
+      var silentDist = {};
+      
+      allPlayers.forEach(function(player) {
+        var value = String(player[metricId] || 'Unknown').trim();
+        if (value === '' || value === 'null') value = 'Unknown';
+        totalDist[value] = (totalDist[value] || 0) + 1;
+      });
+      
+      vipPlayers.forEach(function(player) {
+        var value = String(player[metricId] || 'Unknown').trim();
+        if (value === '' || value === 'null') value = 'Unknown';
+        vipDist[value] = (vipDist[value] || 0) + 1;
+      });
+      
+      silentVipPlayers.forEach(function(player) {
+        var value = String(player[metricId] || 'Unknown').trim();
+        if (value === '' || value === 'null') value = 'Unknown';
+        silentDist[value] = (silentDist[value] || 0) + 1;
+      });
+      
+      metrics.pies[metricId] = {
+        name: metric.name || metricId,
+        type: metricType,
+        total: totalDist,
+        vip: vipDist,
+        silentVip: silentDist
+      };
+      
+      Logger.log('Pie metric: ' + metricId + ' - Total categories: ' + Object.keys(totalDist).length);
+    } else {
+      // Calculate totals for sum/count metrics
+      var totalSum = 0;
+      var vipSum = 0;
+      var silentVipSum = 0;
+      
+      // Sum for all players
+      allPlayers.forEach(function(player) {
+        var value = parseFloat(player[metricId]) || 0;
+        totalSum += value;
+      });
+      
+      // Sum for VIP only
+      vipPlayers.forEach(function(player) {
+        var value = parseFloat(player[metricId]) || 0;
+        vipSum += value;
+      });
+      
+      // Sum for Silent VIP only
+      silentVipPlayers.forEach(function(player) {
+        var value = parseFloat(player[metricId]) || 0;
+        silentVipSum += value;
+      });
+      
+      metrics.sums[metricId] = {
+        name: metric.name || metricId,
+        type: metricType,
+        total: totalSum,
+        vip: vipSum,
+        silentVip: silentVipSum
+      };
+      
+      Logger.log('Metric: ' + metricId + ' (' + metricType + ') - Total: ' + totalSum + ', VIP: ' + vipSum + ', Silent: ' + silentVipSum);
+    }
+  });
+  
+  Logger.log('Processed ' + processedCount + ' metrics from vocabulary');
+  
+  return metrics;
+}
+
+/**
+ * Get VIP sheet data with ALL columns (including metrics)
+ */
+function getVIPSheetData(sheet) {
+  var data = sheet.getDataRange().getValues();
+  if (data.length < 2) return [];
+  
+  var headers = data[0];
+  var result = [];
+  
+  // Get all data starting from row 2
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    var playerObj = {};
+    
+    // Map all columns
+    for (var j = 0; j < headers.length; j++) {
+      var header = String(headers[j]).trim();
+      if (header) {
+        var value = row[j];
+        
+        // Parse tags from JSON string to array
+        if (header === 'tags' && value) {
+          try {
+            // If tags is a string like '["ann_vip","closed"]', parse it
+            if (typeof value === 'string' && value.trim().startsWith('[')) {
+              value = JSON.parse(value);
+            }
+            // If it's already an array, keep it
+            else if (!Array.isArray(value)) {
+              value = [];
+            }
+          } catch (e) {
+            Logger.log('Failed to parse tags for player ' + (playerObj.id || i) + ': ' + e);
+            value = [];
+          }
+        }
+        
+        playerObj[header] = value;
+      }
+    }
+    
+    // Only add if has id
+    if (playerObj.id) {
+      result.push(playerObj);
+    }
+  }
+  
+  Logger.log('getVIPSheetData: ' + result.length + ' players with ' + headers.length + ' columns');
+  return result;
+}
+
+function getAllPlayersForFilters() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var allPlayers = [];
+  var seen = {};
+  
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    
+    // Process both monthly and weekly ACTIVE sheets
+    if (name.indexOf('ACTIVE') !== -1) {
+      var data = getDetailedSheetData(sheet);
+      data.forEach(function(player) {
+        if (player.id && !seen[player.id]) {
+          seen[player.id] = true;
+          allPlayers.push({
+            id: player.id,
+            email: player.email,
+            country: player.country,
+            tags: player.tags,
+            trafficType: player.trafficType || ''
+          });
+        }
+      });
+    }
+  });
+  
+  Logger.log('getAllPlayersForFilters: ' + allPlayers.length + ' unique players');
+  return allPlayers;
+}
+
+/**
+ * Get filtered retention counts based on filters
+ * @param {Object} params - {mode: 'monthly'|'weekly', filters: {vipType, manager, trafficType, country}}
+ */
+/**
+ * Get filtered deposit counts based on filters
+ * @param {Object} params - {filters: {vipType, manager, trafficType, country}}
+ */
+function getFilteredDepositCounts(params) {
+  var filters = params.filters || {};
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  var ftdSheets = [];
+  
+  // Find monthly FTD sheets only
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    var isWeekly = weekPattern.test(name);
+    
+    if (!isWeekly && name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+      ftdSheets.push(sheet);
+    }
+  });
+  
+  ftdSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  var depositRanges = ['FTD', '2+', '3+', '4+', '5+', '6+', '7+', '8+', '9+', '10+', '11+', '12+'];
+  
+  var result = {
+    months: [],
+    rows: []
+  };
+  
+  // Get month names
+  ftdSheets.forEach(function(sheet) {
+    var monthName = extractMonthName(sheet.getName());
+    result.months.push(monthName);
+  });
+  
+  // For each deposit range
+  depositRanges.forEach(function(range) {
+    var row = {
+      range: range,
+      cells: []
+    };
+    
+    // For each month
+    ftdSheets.forEach(function(ftdSheet) {
+      var ftdData = getDetailedSheetData(ftdSheet);
+      
+      // Apply filters to all FTD players
+      var ftdFiltered = ftdData.filter(function(p) {
+        return matchesFilters(p, filters);
+      });
+      
+      var ftdCount = ftdFiltered.length;
+      
+      // For deposit ranges
+      if (range === 'FTD') {
+        row.cells.push({
+          count: ftdCount,
+          pct: 1.0
+        });
+      } else {
+        // Count players with deposits >= range
+        var minDeposits = parseInt(range.replace('+', ''));
+        var achievedCount = 0;
+        
+        ftdFiltered.forEach(function(player) {
+          var deposits = player.deposits || 0;
+          if (deposits >= minDeposits) {
+            achievedCount++;
+          }
+        });
+        
+        row.cells.push({
+          count: achievedCount,
+          pct: ftdCount > 0 ? achievedCount / ftdCount : 0
+        });
+      }
+    });
+    
+    result.rows.push(row);
+  });
+  
+  return result;
+}
+
+function getFilteredRetentionCounts(params) {
+  var mode = params.mode; // 'monthly' or 'weekly'
+  var filters = params.filters || {};
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheets = [];
+  var activeSheets = [];
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  
+  // Find sheets based on mode
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    var isWeekly = weekPattern.test(name);
+    
+    if ((mode === 'weekly' && isWeekly) || (mode === 'monthly' && !isWeekly)) {
+      if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+        ftdSheets.push(sheet);
+      } else if (name.indexOf('ACTIVE') !== -1) {
+        activeSheets.push(sheet);
+      }
+    }
+  });
+  
+  ftdSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  activeSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  var result = {};
+  
+  // Set correct field names based on mode
+  if (mode === 'weekly') {
+    result.weeks = [];
+    result.rows = [];
+  } else {
+    result.months = [];
+    result.rows = [];
+  }
+  
+  // Get period names
+  activeSheets.forEach(function(sheet) {
+    var periodName = mode === 'weekly' ? extractWeekName(sheet.getName()) : extractMonthName(sheet.getName());
+    if (mode === 'weekly') {
+      result.weeks.push(periodName);
+    } else {
+      result.months.push(periodName);
+    }
+  });
+  
+  // Calculate filtered retention for each FTD period
+  ftdSheets.forEach(function(ftdSheet, ftdIdx) {
+    var ftdName = ftdSheet.getName();
+    var periodName = mode === 'weekly' ? extractWeekName(ftdName) : extractMonthName(ftdName);
+    
+    var ftdData = getDetailedSheetData(ftdSheet);
+    
+    // Apply filters to FTD players
+    var ftdFiltered = ftdData.filter(function(p) {
+      return matchesFilters(p, filters);
+    });
+    
+    var ftdCount = ftdFiltered.length;
+    var ftdPlayerIds = ftdFiltered.map(function(p) { return p.id; });
+    
+    var row = {};
+    if (mode === 'weekly') {
+      row.week = periodName;
+    } else {
+      row.month = periodName;
+    }
+    row.ftdCount = ftdCount;
+    row.retention = [];
+    
+    // Calculate retention for each subsequent ACTIVE period
+    for (var i = ftdIdx; i < activeSheets.length; i++) {
+      var activeSheet = activeSheets[i];
+      var activeData = getDetailedSheetData(activeSheet);
+      
+      // Filter active players
+      var activeFiltered = activeData.filter(function(p) {
+        return matchesFilters(p, filters);
+      });
+      
+      var retainedCount = 0;
+      ftdPlayerIds.forEach(function(ftdId) {
+        var found = activeFiltered.some(function(p) {
+          return p.id === ftdId;
+        });
+        if (found) retainedCount++;
+      });
+      
+      row.retention.push({
+        count: retainedCount,
+        pct: ftdCount > 0 ? retainedCount / ftdCount : 0
+      });
+    }
+    
+    result.rows.push(row);
+  });
+  
+  return result;
+}
+
+/**
+ * Check if player matches filters
+ */
+function matchesFilters(player, filters) {
+  // VIP Type filter
+  if (filters.vipType && filters.vipType.length > 0) {
+    var vipType = getVipTypeFromTags(player.tags);
+    if (!filters.vipType.includes(vipType)) {
+      return false;
+    }
+  }
+  
+  // Manager filter
+  if (filters.manager && filters.manager.length > 0) {
+    var manager = getManagerFromTags(player.tags);
+    if (!filters.manager.includes(manager)) {
+      return false;
+    }
+  }
+  
+  // Traffic Type filter
+  if (filters.trafficType && filters.trafficType.length > 0) {
+    if (!filters.trafficType.includes(player.trafficType || '')) {
+      return false;
+    }
+  }
+  
+  // Country filter
+  if (filters.country && filters.country.length > 0) {
+    if (!filters.country.includes(player.country || '')) {
+      return false;
+    }
+  }
+  
+  return true;
+}
+
+/**
+ * Extract VIP type from tags
+ */
+function getVipTypeFromTags(tags) {
+  if (!tags) return '';
+  var t = String(tags).toLowerCase();
+  if (t.indexOf('ann_vip') !== -1) return 'VIP';
+  if (t.indexOf('ann') !== -1 && t.indexOf('vip') === -1) return 'Silent';
+  if (t.indexOf('vip') !== -1 && t.indexOf('ann') === -1) return 'Super VIP';
+  return '';
+}
+
+/**
+ * Extract manager from tags
+ */
+function getManagerFromTags(tags) {
+  if (!tags) return '';
+  var t = String(tags).toLowerCase();
+  if (t.indexOf('ann') !== -1) return 'Ann';
+  if (t.indexOf('vlad') !== -1) return 'Vlad';
+  if (t.indexOf('kate') !== -1) return 'Kate';
+  if (t.indexOf('max') !== -1) return 'Max';
+  return '';
+}
+
+function getWeeklyRetentionData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheets = [];
+  var activeSheets = [];
+  
+  // Знаходимо weekly sheets за форматом DD.MM - DD.MM
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    // Формат: 22.12 - 28.12 FTD або 22.12 - 28.12 ACTIVE
+    var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+    
+    if (weekPattern.test(name)) {
+      if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+        ftdSheets.push(sheet);
+      } else if (name.indexOf('ACTIVE') !== -1) {
+        activeSheets.push(sheet);
+      }
+    }
+  });
+  
+  // Helper функція для парсингу дат з назв тижнів
+  function parseWeekDateBackend(weekStr) {
+    var parts = weekStr.split('-');
+    if (parts.length !== 2) return null;
+    var startParts = parts[0].trim().split('.');
+    if (startParts.length !== 2) return null;
+    var day = parseInt(startParts[0]);
+    var month = parseInt(startParts[1]);
+    var year = month >= 7 ? 2024 : 2025;
+    return new Date(year, month - 1, day);
+  }
+  
+  // Сортуємо sheets ХРОНОЛОГІЧНО
+  function sortSheetsByDate(sheetList) {
+    return sheetList.sort(function(a, b) {
+      var aWeek = extractWeekName(a.getName());
+      var bWeek = extractWeekName(b.getName());
+      var aDate = parseWeekDateBackend(aWeek);
+      var bDate = parseWeekDateBackend(bWeek);
+      if (!aDate || !bDate) return 0;
+      return aDate - bDate;
+    });
+  }
+  
+  ftdSheets = sortSheetsByDate(ftdSheets);
+  activeSheets = sortSheetsByDate(activeSheets);
+  
+  var result = {
+    weeks: [],
+    rows: []
+  };
+  
+  // Отримуємо назви тижнів з ACTIVE sheets
+  activeSheets.forEach(function(sheet) {
+    var weekName = extractWeekName(sheet.getName());
+    result.weeks.push(weekName);
+  });
+  
+  // Для кожного FTD тижня рахуємо retention
+  ftdSheets.forEach(function(ftdSheet, ftdIdx) {
+    var ftdName = ftdSheet.getName();
+    var weekName = extractWeekName(ftdName);
+    
+    var ftdData = getSheetData(ftdSheet);
+    var ftdCount = ftdData.length;
+    var ftdPlayerIds = ftdData.map(function(p) { return p.id; });
+    
+    var row = {
+      week: weekName,
+      ftdCount: ftdCount,
+      retention: []
+    };
+    
+    // Рахуємо retention для ВСІХ тижнів (з пропусками для минулого)
+    for (var i = 0; i < activeSheets.length; i++) {
+      if (i < ftdIdx) {
+        // Минулий тиждень - пропускаємо
+        row.retention.push({count: 0, pct: 0});
+        continue;
+      }
+      
+      var activeSheet = activeSheets[i];
+      var activeData = getSheetData(activeSheet);
+      
+      var retainedCount = 0;
+      ftdPlayerIds.forEach(function(ftdId) {
+        var found = activeData.some(function(p) {
+          return p.id === ftdId;
+        });
+        if (found) retainedCount++;
+      });
+      
+      row.retention.push({
+        count: retainedCount,
+        pct: ftdCount > 0 ? retainedCount / ftdCount : 0
+      });
+    }
+    
+    result.rows.push(row);
+  });
+  
+  return result;
+}
+
+function extractWeekName(sheetName) {
+  // Витягуємо дати з формату "22.12 - 28.12 FTD" або "22.12 - 28.12 ACTIVE"
+  var match = sheetName.match(/(\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2})/);
+  if (match) {
+    return match[1].trim();
+  }
+  return sheetName;
+}
+
+
+/******************** DEPOSIT CONVERSION ********************/
+
+function getTrafficTypeMapping() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var generalSheet = ss.getSheetByName('GENERAL INFO');
+  
+  if (!generalSheet) {
+    Logger.log('GENERAL INFO sheet not found');
+    return {};
+  }
+  
+  var data = generalSheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var stagIdx = -1;
+  var typeIdx = -1;
+  
+  for (var i = 0; i < headers.length; i++) {
+    if (String(headers[i]).toLowerCase() === 'stag') stagIdx = i;
+    if (String(headers[i]).toLowerCase() === 'type') typeIdx = i;
+  }
+  
+  if (stagIdx === -1 || typeIdx === -1) {
+    Logger.log('STAG or TYPE column not found in GENERAL INFO');
+    Logger.log('Available headers: ' + headers.join(', '));
+    return {};
+  }
+  
+  var mapping = {};
+  
+  for (var i = 1; i < data.length; i++) {
+    var stag = String(data[i][stagIdx] || '').trim();
+    var type = String(data[i][typeIdx] || '').trim();
+    
+    if (stag && type) {
+      // General Info already has clean stag (e.g. "74442")
+      // Don't split - just store as is
+      mapping[stag] = type;
+    }
+  }
+  
+  Logger.log('Traffic type mapping from GENERAL INFO: ' + JSON.stringify(mapping));
+  return mapping;
+}
+
+function extractMonthNumber(sheetName) {
+  var months = {
+    'january': 1, 'jan': 1,
+    'february': 2, 'feb': 2,
+    'march': 3, 'mar': 3,
+    'april': 4, 'apr': 4,
+    'may': 5,
+    'june': 6, 'jun': 6,
+    'july': 7, 'jul': 7,
+    'august': 8, 'aug': 8,
+    'september': 9, 'sep': 9, 'sept': 9,
+    'october': 10, 'oct': 10,
+    'november': 11, 'nov': 11,
+    'december': 12, 'dec': 12
+  };
+  
+  var name = sheetName.toLowerCase();
+  for (var month in months) {
+    if (name.indexOf(month) !== -1) {
+      return months[month];
+    }
+  }
+  return 0;
+}
+
+function extractMonthName(sheetName) {
+  var months = ['January', 'February', 'March', 'April', 'May', 'June', 
+                'July', 'August', 'September', 'October', 'November', 'December'];
+  var monthNum = extractMonthNumber(sheetName);
+  return monthNum > 0 ? months[monthNum - 1] : sheetName;
+}
+
+function getRetentionData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheets = [];
+  var activeSheets = [];
+  
+  // Weekly pattern: DD.MM - DD.MM
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    
+    // Skip weekly sheets - only process monthly
+    if (weekPattern.test(name)) {
+      return; // Skip this sheet
+    }
+    
+    if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+      ftdSheets.push(sheet);
+    } else if (name.indexOf('ACTIVE') !== -1) {
+      activeSheets.push(sheet);
+    }
+  });
+  
+  ftdSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  activeSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  var result = {
+    months: [],
+    rows: []
+  };
+  
+  activeSheets.forEach(function(sheet) {
+    var monthName = extractMonthName(sheet.getName());
+    result.months.push(monthName);
+  });
+  
+  ftdSheets.forEach(function(ftdSheet, ftdIdx) {
+    var ftdName = ftdSheet.getName();
+    var ftdMonth = extractMonthName(ftdName);
+    
+    var ftdData = getSheetData(ftdSheet);
+    var ftdCount = ftdData.length;
+    var ftdPlayerIds = ftdData.map(function(p) { return p.id; });
+    
+    var row = {
+      month: ftdMonth,
+      ftdCount: ftdCount,
+      retention: []
+    };
+    
+    for (var i = ftdIdx; i < activeSheets.length; i++) {
+      var activeSheet = activeSheets[i];
+      var activeData = getSheetData(activeSheet);
+      
+      var retainedCount = 0;
+      ftdPlayerIds.forEach(function(ftdId) {
+        var found = activeData.some(function(p) {
+          return p.id === ftdId;
+        });
+        if (found) retainedCount++;
+      });
+      
+      row.retention.push({
+        count: retainedCount,
+        pct: ftdCount > 0 ? retainedCount / ftdCount : 0
+      });
+    }
+    
+    result.rows.push(row);
+  });
+  
+  return result;
+}
+
+function getDepositConversionData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheets = [];
+  var activeSheets = [];
+  
+  // Weekly pattern: DD.MM - DD.MM
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    
+    // Skip weekly sheets - only process monthly
+    if (weekPattern.test(name)) {
+      return; // Skip this sheet
+    }
+    
+    if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+      ftdSheets.push(sheet);
+    } else if (name.indexOf('ACTIVE') !== -1) {
+      activeSheets.push(sheet);
+    }
+  });
+  
+  activeSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  var allActiveData = [];
+  activeSheets.forEach(function(sheet) {
+    allActiveData.push({
+      name: sheet.getName(),
+      data: getSheetData(sheet)
+    });
+  });
+  
+  Logger.log('Loaded ' + allActiveData.length + ' ACTIVE sheets');
+  
+  ftdSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  var depositRanges = ['FTD','2+','3+','4+','5+','6+','7+','8+','9+','10+',
+    '11-15','16-20','21-25','26-30','31-40','41-50','50+'];
+  
+  var data = {months: [], rows: []};
+  depositRanges.forEach(function(range) {
+    data.rows.push({range: range, cells: []});
+  });
+  
+  ftdSheets.forEach(function(ftdSheet) {
+    var ftdName = ftdSheet.getName();
+    var monthName = extractMonthName(ftdName);
+    data.months.push(monthName);
+    
+    var ftdData = getSheetData(ftdSheet);
+    var ftdCount = ftdData.length;
+    
+    data.rows[0].cells.push({count: ftdCount, total: ftdCount, pct: 1.0});
+    
+    if (allActiveData.length > 0) {
+      for (var i = 1; i < depositRanges.length; i++) {
+        var range = depositRanges[i];
+        var parsed = parseDepositRange(range);
+        var min = parsed.min;
+        var max = parsed.max;
+        
+        var count = 0;
+        
+        for (var j = 0; j < ftdData.length; j++) {
+          var ftdPlayerId = ftdData[j].id;
+          var found = false;
+          
+          for (var k = 0; k < allActiveData.length && !found; k++) {
+            var activeSheet = allActiveData[k];
+            
+            for (var m = 0; m < activeSheet.data.length; m++) {
+              var player = activeSheet.data[m];
+              
+              if (player.id === ftdPlayerId) {
+                var deposits = player.depositCount;
+                var inRange = false;
+                
+                if (max === null) {
+                  inRange = (deposits >= min);
+                } else {
+                  inRange = (deposits >= min && deposits <= max);
+                }
+                
+                if (inRange) {
+                  count++;
+                  found = true;
+                  break;
+                }
+              }
+            }
+          }
+        }
+        
+        data.rows[i].cells.push({count: count, total: ftdCount, pct: ftdCount > 0 ? count / ftdCount : 0});
+      }
+    } else {
+      for (var k = 1; k < depositRanges.length; k++) {
+        data.rows[k].cells.push({count: 0, total: ftdCount, pct: 0});
+      }
+    }
+  });
+  
+  return data;
+}
+
+function getSheetData(sheet) {
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var idIdx = -1;
+  var depositCountIdx = -1;
+  
+  for (var i = 0; i < headers.length; i++) {
+    if (headers[i] === 'id') idIdx = i;
+    if (headers[i] === 'lifetime_deposit_count_total') depositCountIdx = i;
+  }
+  
+  var result = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[idIdx]) continue;
+    
+    result.push({
+      id: String(row[idIdx]).trim(),
+      depositCount: Number(row[depositCountIdx]) || 0
+    });
+  }
+  
+  return result;
+}
+
+function parseDepositRange(range) {
+  if (range.indexOf('-') !== -1) {
+    var parts = range.split('-');
+    return {min: parseInt(parts[0]), max: parseInt(parts[1])};
+  } else if (range.indexOf('+') !== -1) {
+    return {min: parseInt(range), max: null};
+  }
+  
+  return {min: 0, max: null};
+}
+
+/**
+ * ✅ FIX: FTD DEDUPLICATION
+ * Кожен гравець рахується тільки ОДИН РАЗ
+ */
+function getCellPlayers(params) {
+  var month = params.month;
+  var depositRange = params.depositRange;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheetName = month.toUpperCase() + ' FTD';
+  
+  Logger.log('Looking for FTD: ' + ftdSheetName);
+  
+  var ftdSheet = ss.getSheetByName(ftdSheetName);
+  
+  if (!ftdSheet) {
+    ftdSheetName = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase() + ' FTD';
+    ftdSheet = ss.getSheetByName(ftdSheetName);
+  }
+  
+  if (!ftdSheet) {
+    return {error: 'Sheet not found: ' + month + ' FTD (tried: ' + ftdSheetName + ')'};
+  }
+  
+  var activeSheets = [];
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    if (name.indexOf('ACTIVE') !== -1) {
+      activeSheets.push(sheet);
+    }
+  });
+  
+  activeSheets.sort(function(a, b) {
+    return sheets.indexOf(a) - sheets.indexOf(b);
+  });
+  
+  if (activeSheets.length === 0) {
+    return {error: 'No ACTIVE sheets found in document'};
+  }
+  
+  var allActiveData = [];
+  activeSheets.forEach(function(sheet) {
+    allActiveData.push({
+      name: sheet.getName(),
+      data: getDetailedSheetData(sheet)
+    });
+  });
+  
+  Logger.log('Loaded ' + allActiveData.length + ' ACTIVE sheets');
+  
+  var ftdData = ftdSheet.getDataRange().getValues();
+  var ftdHeaders = ftdData[0];
+  var ftdIdIdx = -1;
+  
+  for (var i = 0; i < ftdHeaders.length; i++) {
+    if (ftdHeaders[i] === 'id') ftdIdIdx = i;
+  }
+  
+  var ftdPlayerIds = [];
+  for (var i = 1; i < ftdData.length; i++) {
+    var id = String(ftdData[i][ftdIdIdx] || '').trim();
+    if (id) ftdPlayerIds.push(id);
+  }
+  
+  Logger.log('FTD player IDs: ' + ftdPlayerIds.length);
+  
+  if (depositRange === 'FTD') {
+    // ✅ FIX: DEDUPLICATE FTD PLAYERS
+    var ftdAchieved = [];
+    var seenPlayers = {}; // Track unique players
+    
+    ftdPlayerIds.forEach(function(playerId) {
+      // Skip if already found
+      if (seenPlayers[playerId]) return;
+      
+      for (var i = 0; i < allActiveData.length; i++) {
+        var activeSheet = allActiveData[i];
+        
+        for (var j = 0; j < activeSheet.data.length; j++) {
+          var player = activeSheet.data[j];
+          
+          if (player.id === playerId) {
+            ftdAchieved.push({
+              id: player.id,
+              email: player.email,
+              country: player.country,
+              status: player.status,
+              tags: player.tags || '',
+              trafficType: player.trafficType || '',
+              actualDeposits: player.depositCount,
+              foundIn: activeSheet.name
+            });
+            seenPlayers[playerId] = true; // Mark as seen
+            break;
+          }
+        }
+        if (seenPlayers[playerId]) break; // Stop searching after found
+      }
+    });
+    
+    return {
+      achieved: ftdAchieved,
+      dropped: [],
+      month: month,
+      range: depositRange,
+      total: ftdPlayerIds.length
+    };
+  }
+  
+  var parsed = parseDepositRange(depositRange);
+  var min = parsed.min;
+  var max = parsed.max;
+  
+  var achieved = [];
+  var dropped = [];
+  
+  ftdPlayerIds.forEach(function(playerId) {
+    var found = false;
+    var playerInfo = null;
+    
+    for (var i = 0; i < allActiveData.length && !found; i++) {
+      var activeSheet = allActiveData[i];
+      
+      for (var j = 0; j < activeSheet.data.length; j++) {
+        var player = activeSheet.data[j];
+        
+        if (player.id === playerId) {
+          var deposits = player.depositCount;
+          var inRange = false;
+          
+          if (max === null) {
+            inRange = (deposits >= min);
+          } else {
+            inRange = (deposits >= min && deposits <= max);
+          }
+          
+          if (inRange) {
+            achieved.push({
+              id: player.id,
+              email: player.email,
+              country: player.country,
+              status: player.status,
+              tags: player.tags || '',
+              trafficType: player.trafficType || '',
+              actualDeposits: deposits,
+              foundIn: activeSheet.name
+            });
+            found = true;
+            break;
+          } else {
+            if (!playerInfo) {
+              playerInfo = {
+                id: player.id,
+                email: player.email,
+                country: player.country,
+                status: player.status,
+                tags: player.tags || '',
+                trafficType: player.trafficType || '',
+                actualDeposits: deposits,
+                foundIn: activeSheet.name
+              };
+            }
+          }
+        }
+      }
+    }
+    
+    if (!found) {
+      if (playerInfo) {
+        dropped.push(playerInfo);
+      }
+    }
+  });
+  
+  Logger.log('Result: ' + achieved.length + ' achieved, ' + dropped.length + ' dropped');
+  
+  return {
+    achieved: achieved,
+    dropped: dropped,
+    month: month,
+    range: depositRange,
+    total: ftdPlayerIds.length
+  };
+}
+
+function getDetailedSheetData(sheet) {
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0];
+  
+  var idIdx = -1;
+  var emailIdx = -1;
+  var countryIdx = -1;
+  var statusIdx = -1;
+  var depositCountIdx = -1;
+  var tagsIdx = -1;
+  var stagIdx = -1;
+  
+  for (var i = 0; i < headers.length; i++) {
+    if (headers[i] === 'id') idIdx = i;
+    if (headers[i] === 'email') emailIdx = i;
+    if (headers[i] === 'country') countryIdx = i;
+    if (headers[i] === 'disabled') statusIdx = i;
+    if (headers[i] === 'lifetime_deposit_count_total') depositCountIdx = i;
+    if (headers[i] === 'tags') tagsIdx = i;
+    if (headers[i] === 'stag') stagIdx = i;
+  }
+  
+  var trafficMapping = getTrafficTypeMapping();
+  
+  var result = [];
+  for (var i = 1; i < data.length; i++) {
+    var row = data[i];
+    if (!row[idIdx]) continue;
+    
+    var stag = stagIdx !== -1 ? String(row[stagIdx] || '') : '';
+    var trafficType = '';
+    if (stag) {
+      var stagPrefix = stag.split('_')[0];
+      trafficType = trafficMapping[stagPrefix] || '';
+    }
+    
+    result.push({
+      id: String(row[idIdx]).trim(),
+      email: emailIdx !== -1 ? String(row[emailIdx] || '') : '',
+      country: countryIdx !== -1 ? String(row[countryIdx] || '') : '',
+      status: statusIdx !== -1 ? String(row[statusIdx] || 'none') : 'none',
+      depositCount: depositCountIdx !== -1 ? Number(row[depositCountIdx]) || 0 : 0,
+      tags: tagsIdx !== -1 ? String(row[tagsIdx] || '') : '',
+      trafficType: trafficType
+    });
+  }
+  
+  return result;
+}
+
+function getCellPlayersRetention(params) {
+  var ftdMonth = params.ftdMonth;
+  var activeMonth = params.activeMonth;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var ftdSheetName = ftdMonth.toUpperCase() + ' FTD';
+  var ftdSheet = ss.getSheetByName(ftdSheetName);
+  
+  if (!ftdSheet) {
+    ftdSheetName = ftdMonth.charAt(0).toUpperCase() + ftdMonth.slice(1).toLowerCase() + ' FTD';
+    ftdSheet = ss.getSheetByName(ftdSheetName);
+  }
+  
+  if (!ftdSheet) {
+    return {error: 'FTD sheet not found: ' + ftdMonth + ' FTD'};
+  }
+  
+  var activeSheetName = activeMonth.toUpperCase() + ' ACTIVE';
+  var activeSheet = ss.getSheetByName(activeSheetName);
+  
+  if (!activeSheet) {
+    activeSheetName = activeMonth.charAt(0).toUpperCase() + activeMonth.slice(1).toLowerCase() + ' ACTIVE';
+    activeSheet = ss.getSheetByName(activeSheetName);
+  }
+  
+  if (!activeSheet) {
+    return {error: 'ACTIVE sheet not found: ' + activeMonth + ' ACTIVE'};
+  }
+  
+  var ftdData = ftdSheet.getDataRange().getValues();
+  var ftdHeaders = ftdData[0];
+  var ftdIdIdx = -1;
+  
+  for (var i = 0; i < ftdHeaders.length; i++) {
+    if (ftdHeaders[i] === 'id') ftdIdIdx = i;
+  }
+  
+  var ftdPlayerIds = [];
+  for (var i = 1; i < ftdData.length; i++) {
+    var id = String(ftdData[i][ftdIdIdx] || '').trim();
+    if (id) ftdPlayerIds.push(id);
+  }
+  
+  var activePlayersData = getDetailedSheetData(activeSheet);
+  
+  var achieved = [];
+  var dropped = [];
+  
+  ftdPlayerIds.forEach(function(ftdId) {
+    var found = false;
+    
+    for (var i = 0; i < activePlayersData.length; i++) {
+      if (activePlayersData[i].id === ftdId) {
+        achieved.push({
+          id: activePlayersData[i].id,
+          email: activePlayersData[i].email,
+          country: activePlayersData[i].country,
+          status: activePlayersData[i].status,
+          tags: activePlayersData[i].tags || '',
+          trafficType: activePlayersData[i].trafficType || '',
+          actualDeposits: activePlayersData[i].depositCount
+        });
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found) {
+      // dropped
+    }
+  });
+  
+  return {
+    achieved: achieved,
+    dropped: dropped,
+    month: ftdMonth + ' → ' + activeMonth,
+    range: 'Retention',
+    total: ftdPlayerIds.length
+  };
+}
+
+/**
+ * Get retention players for weekly periods
+ */
+function getCellPlayersRetentionWeekly(params) {
+  var ftdWeek = params.ftdWeek;
+  var activeWeek = params.activeWeek;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Weekly sheets named like "29.12-04.01 FTD" and "29.12-04.01 ACTIVE"
+  var ftdSheetName = ftdWeek + ' FTD';
+  var ftdSheet = ss.getSheetByName(ftdSheetName);
+  
+  if (!ftdSheet) {
+    return {error: 'FTD sheet not found: ' + ftdSheetName};
+  }
+  
+  var activeSheetName = activeWeek + ' ACTIVE';
+  var activeSheet = ss.getSheetByName(activeSheetName);
+  
+  if (!activeSheet) {
+    return {error: 'ACTIVE sheet not found: ' + activeSheetName};
+  }
+  
+  var ftdData = ftdSheet.getDataRange().getValues();
+  var ftdHeaders = ftdData[0];
+  var ftdIdIdx = -1;
+  
+  for (var i = 0; i < ftdHeaders.length; i++) {
+    if (ftdHeaders[i] === 'id') ftdIdIdx = i;
+  }
+  
+  var ftdPlayerIds = [];
+  for (var i = 1; i < ftdData.length; i++) {
+    var id = String(ftdData[i][ftdIdIdx] || '').trim();
+    if (id) ftdPlayerIds.push(id);
+  }
+  
+  var activePlayersData = getDetailedSheetData(activeSheet);
+  
+  var achieved = [];
+  var dropped = [];
+  
+  ftdPlayerIds.forEach(function(ftdId) {
+    var found = false;
+    
+    for (var i = 0; i < activePlayersData.length; i++) {
+      if (activePlayersData[i].id === ftdId) {
+        achieved.push({
+          id: activePlayersData[i].id,
+          email: activePlayersData[i].email,
+          country: activePlayersData[i].country,
+          status: activePlayersData[i].status,
+          tags: activePlayersData[i].tags || '',
+          trafficType: activePlayersData[i].trafficType || '',
+          actualDeposits: activePlayersData[i].depositCount
+        });
+        found = true;
+        break;
+      }
+    }
+    
+    if (!found) {
+      // dropped
+    }
+  });
+  
+  return {
+    achieved: achieved,
+    dropped: dropped,
+    week: ftdWeek + ' → ' + activeWeek,
+    range: 'Retention',
+    total: ftdPlayerIds.length
+  };
+}
+
+function createPlayersSheet(params) {
+  var title = params.title;
+  var achieved = params.achieved || [];
+  var dropped = params.dropped || [];
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var tagsSheet = ss.getSheetByName('TAGS');
+  var tagToManager = {};
+  
+  if (tagsSheet) {
+    var tagsData = tagsSheet.getDataRange().getValues();
+    for (var i = 1; i < tagsData.length; i++) {
+      var tag = String(tagsData[i][0] || '').trim();
+      var fullName = String(tagsData[i][1] || '').trim();
+      
+      if (tag && fullName) {
+        var manager = '';
+        if (fullName.indexOf('Silent ') === 0) {
+          manager = fullName.substring(7).trim();
+        } else if (fullName.indexOf('VIP ') === 0) {
+          manager = fullName.substring(4).trim();
+        } else {
+          manager = fullName;
+        }
+        
+        if (manager) {
+          tagToManager[tag.toLowerCase()] = manager;
+        }
+      }
+    }
+  }
+  
+  function getManager(tags) {
+    if (!tags) return '';
+    var tagList = String(tags).toLowerCase().split(',');
+    
+    for (var i = 0; i < tagList.length; i++) {
+      var tag = tagList[i].trim();
+      if (tagToManager[tag]) {
+        return tagToManager[tag];
+      }
+    }
+    
+    var tagsLower = String(tags).toLowerCase();
+    if (tagsLower.indexOf('ann') !== -1) return 'Ann';
+    if (tagsLower.indexOf('vlad') !== -1) return 'Vlad';
+    if (tagsLower.indexOf('kate') !== -1) return 'Kate';
+    if (tagsLower.indexOf('max') !== -1) return 'Max';
+    
+    return '';
+  }
+  
+  function createBackofficeLink(playerId) {
+    if (!playerId) return '';
+    var id = String(playerId).replace('slotornado:', '').trim();
+    return 'https://backoffice.slotornado-bivu.com/backend/players/' + id;
+  }
+  
+  var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+  var fileName = title + ' - ' + timestamp;
+  var newFile = SpreadsheetApp.create(fileName);
+  var newSheet = newFile.getSheets()[0];
+  newSheet.setName('Players');
+  
+  var headers = ['Status', 'Email', 'ID', 'Country', 'Account Status', 'Link', 'Manager', 'Deposits'];
+  var allData = [headers];
+  
+  achieved.forEach(function(p) {
+    var status = String(p.status || 'none').toLowerCase() === 'none' ? 'active' : p.status;
+    var link = createBackofficeLink(p.id);
+    var manager = getManager(p.tags);
+    
+    allData.push([
+      '✅ Achieved',
+      p.email || '',
+      p.id || '',
+      p.country || '',
+      status,
+      link,
+      manager,
+      p.actualDeposits || 0
+    ]);
+  });
+  
+  dropped.forEach(function(p) {
+    var status = String(p.status || 'none').toLowerCase() === 'none' ? 'active' : p.status;
+    var link = createBackofficeLink(p.id);
+    var manager = getManager(p.tags);
+    
+    allData.push([
+      '❌ Dropped',
+      p.email || '',
+      p.id || '',
+      p.country || '',
+      status,
+      link,
+      manager,
+      p.actualDeposits || 0
+    ]);
+  });
+  
+  newSheet.getRange(1, 1, allData.length, headers.length).setValues(allData);
+  
+  newSheet.getRange(1, 1, 1, headers.length)
+    .setBackground('#E8EAF6')
+    .setFontColor('#1A237E')
+    .setFontWeight('bold')
+    .setHorizontalAlignment('center');
+  
+  if (allData.length > 1) {
+    var linkColumn = 6;
+    for (var i = 2; i <= allData.length; i++) {
+      var link = allData[i-1][linkColumn-1];
+      if (link) {
+        var safeLink = String(link).replace(/"/g, '""');
+        newSheet.getRange(i, linkColumn).setFormula('=HYPERLINK("' + safeLink + '"; "Open")');
+      }
+    }
+  }
+  
+  for (var i = 2; i <= allData.length; i++) {
+    var statusCell = newSheet.getRange(i, 1);
+    var statusValue = allData[i-1][0];
+    
+    if (statusValue === '✅ Achieved') {
+      statusCell.setBackground('#E8F5E9');
+      statusCell.setFontColor('#2E7D32');
+    } else {
+      statusCell.setBackground('#FFEBEE');
+      statusCell.setFontColor('#C62828');
+    }
+  }
+  
+  newSheet.setFrozenRows(1);
+  
+  for (var i = 1; i <= headers.length; i++) {
+    newSheet.autoResizeColumn(i);
+  }
+  
+  newSheet.getRange(1, 1, allData.length, headers.length)
+    .setBorder(true, true, true, true, true, true, '#BDBDBD', SpreadsheetApp.BorderStyle.SOLID);
+  
+  return {
+    success: true,
+    sheetName: fileName,
+    url: newFile.getUrl()
+  };
+}
+
+/******************** KPI DASHBOARD ********************/
+
+function diagnosticSheets() {
+  var found = kpiFindSheetsForProject_();
+  var allSheets = SpreadsheetApp.getActive().getSheets().map(function(s){ return s.getName(); });
+  
+  return {
+    allSheets: allSheets,
+    tabs: found
+  };
+}
+
+function getWebAppUrl(){
+  return kpiGetWebAppUrl();
+}
+
+function kpiGetWebAppUrl() {
+  var hardcoded = 'https://script.google.com/a/macros/bets.io/s/AKfycbwm6zh3qw00OXpug7hqiLc79Szs5oaKlsj9rqqT-tTbINUho57yqolUb51fdSmcVlhP/exec';
+  try {
+    var url = ScriptApp.getService().getUrl();
+    if (url) return url;
+  } catch (e) {}
+  var prop = PropertiesService.getScriptProperties().getProperty('KPI_WEBAPP_URL');
+  if (prop) return prop;
+  return hardcoded;
+}
+
+function kpiFindSheetsForProject_() {
+  var sheets = SpreadsheetApp.getActive().getSheets();
+  var tabsData = {};
+  
+  for (var i = 0; i < sheets.length; i++) {
+    var name = sheets[i].getName();
+    if (!name) continue;
+    
+    var up = String(name).toUpperCase();
+    
+    if (up.indexOf('SLOTORNADO') === -1) continue;
+    
+    var prefixMatch = name.match(/^\[([^\]]+)\]/);
+    if (!prefixMatch) continue;
+    
+    var tab = prefixMatch[1].toUpperCase();
+    
+    if (!tabsData[tab]) {
+      tabsData[tab] = { monthly: [], weekly: [] };
+    }
+    
+    if (up.indexOf('MONTHLY') !== -1) {
+      tabsData[tab].monthly.push(name);
+    }
+    if (up.indexOf('WEEKLY') !== -1) {
+      tabsData[tab].weekly.push(name);
+    }
+  }
+  
+  return tabsData;
+}
+
+/**
+ * ✅ FIX: METRICS SHEET INTEGRATION
+ */
+function readMetricFormats() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var metricsSheet = ss.getSheetByName('METRICS');
+    
+    if (!metricsSheet) {
+      return {};
+    }
+    
+    var lastRow = metricsSheet.getLastRow();
+    if (lastRow < 2) {
+      return {};
+    }
+    
+    var data = metricsSheet.getRange('A2:B' + lastRow).getValues();
+    var formats = {};
+    
+    data.forEach(function(row) {
+      var metricName = row[0];
+      var format = row[1];
+      
+      if (metricName && format) {
+        formats[metricName] = format;
+      }
+    });
+    
+    return formats;
+  } catch (e) {
+    Logger.log('Error in readMetricFormats: ' + e.toString());
+    return {};
+  }
+}
+
+/**
+ * ✅ FIX: Return metricFormats
+ */
+function kpiLoadProject() {
+  try {
+    var tabsFound = kpiFindSheetsForProject_();
+    
+    Logger.log('Found tabs: ' + JSON.stringify(Object.keys(tabsFound)));
+    
+    if (Object.keys(tabsFound).length === 0) {
+      throw new Error('No [VIP] or [TOTAL] sheets found');
+    }
+    
+    var result = { tabs: {} };
+    
+    for (var tab in tabsFound) {
+      var sheets = tabsFound[tab];
+      
+      var mon = readMonthlyDynamicMulti_(sheets.monthly);
+      var wk  = readWeeklyDynamicMulti_(sheets.weekly);
+
+      var months = [];
+      var ymKeys = {};
+      Object.keys(mon.map).forEach(function(k){ ymKeys[k]=1; });
+      Object.keys(wk.map).forEach(function(k){ ymKeys[k]=1; });
+
+      Object.keys(ymKeys).sort().forEach(function(ym){
+        var label = mon.map[ym] ? mon.map[ym].label : monthLabelFromYm_(ym);
+        var monthly = emptyFromNames_(mergeNameSets_(mon.metrics));
+        if (mon.map[ym]) copyAdd_(monthly, mon.map[ym].monthly);
+
+        var weeksArr = [];
+        if (wk.map[ym]) {
+          var weekKeys = Object.keys(wk.map[ym]).map(function(s){return +s;}).sort(function(a,b){return a-b;});
+          for (var i=0; i<weekKeys.length; i++){
+            var ts  = weekKeys[i];
+            var row = wk.map[ym][ts];
+            var dIso = row && row.date ? String(row.date) : null;
+            row.label = 'Week ' + (i+1) + (dIso ? (' (' + dIso + ')') : '');
+            row.weekNo = (i+1);
+            weeksArr.push(row);
+          }
+        }
+
+        var sumWeeks = emptyFromNames_(mergeNameSets_(wk.metrics));
+        weeksArr.forEach(function(w){ copyAdd_(sumWeeks, w.weekly); });
+
+        months.push({ ym: ym, label: label, monthly: monthly, weeks: weeksArr, sumWeeks: sumWeeks });
+      });
+
+      var metricsObj = mergeNameSets_(mergeNameSets_(mon.metrics), wk.metrics);
+      var metricsArr = Object.keys(metricsObj || {});
+      var nonZero = {};
+      metricsArr.forEach(function (m) { nonZero[m] = hasNonZero_(months, m); });
+      
+      Logger.log(tab + ': ' + metricsArr.length + ' metrics, ' + months.length + ' months');
+      
+      result.tabs[tab] = { metrics: metricsArr, months: months, nonZero: nonZero };
+    }
+    
+    // ✅ FIX: Read and return METRICS sheet
+    var metricFormats = readMetricFormats();
+    result.metricFormats = metricFormats;
+
+    return result;
+  } catch (e) {
+    Logger.log('Error in kpiLoadProject: ' + e.toString());
+    return {
+      tabs: {},
+      metricFormats: {},
+      error: e.toString()
+    };
+  }
+}
+
+function readMonthlyDynamicMulti_(sheetNames){
+  var total = { map: {}, metrics: {} };
+  (sheetNames || []).forEach(function(name){
+    var one = readMonthlyDynamic_(name);
+    Object.keys(one.metrics||{}).forEach(function(k){ total.metrics[k]=1; });
+    Object.keys(one.map||{}).forEach(function(ym){
+      var box = total.map[ym] || (total.map[ym] = { label: one.map[ym].label, monthly: {} });
+      copyAdd_(box.monthly, one.map[ym].monthly);
+    });
+  });
+  return total;
+}
+
+function readWeeklyDynamicMulti_(sheetNames){
+  var total = { map: {}, metrics: {} };
+  (sheetNames || []).forEach(function(name){
+    var one = readWeeklyDynamic_(name);
+    Object.keys(one.metrics||{}).forEach(function(k){ total.metrics[k]=1; });
+    Object.keys(one.map||{}).forEach(function(ym){
+      var tMonth = total.map[ym] || (total.map[ym] = {});
+      var sMonth = one.map[ym] || {};
+      Object.keys(sMonth).forEach(function(ts){
+        var src = sMonth[ts];
+        var dst = tMonth[ts] || (tMonth[ts] = { label: src.label||'', ts: ts, weekly: {} });
+        if (src.date) dst.date = src.date;
+        copyAdd_(dst.weekly, src.weekly);
+      });
+    });
+  });
+  return total;
+}
+
+function readMonthlyDynamic_(sheetName){
+  var sh = getSheetSafe_(sheetName); if (!sh) return {map:{}, metrics:{}};
+  var values = sh.getDataRange().getValues(); if (!values.length) return {map:{}, metrics:{}};
+
+  var head = values[0].map(function(h){ return String(h||'').trim(); });
+  var norm = head.map(norm_);
+  var rows = values.slice(1);
+
+  var dateIdx   = firstIndex_(norm, ['month','period','date']);
+  var metricIdx = detectMetricColumns_(rows, head, norm);
+
+  var out = {}; var metrics = {};
+  rows.forEach(function(r){
+    var ym = ymFromAny_(r[dateIdx]); if (!ym) return;
+    var box = out[ym] || (out[ym] = { label: monthLabelFromYm_(ym), monthly: {} });
+    metricIdx.forEach(function(i){
+      var name = head[i]; var val = toNumber_(r[i]); if (val == null) return;
+      metrics[name]=1; box.monthly[name] = (box.monthly[name]||0) + val;
+    });
+  });
+  return { map: out, metrics: metrics };
+}
+
+function readWeeklyDynamic_(sheetName){
+  var sh = getSheetSafe_(sheetName); if (!sh) return {map:{}, metrics:{}};
+  var values = sh.getDataRange().getValues(); if (!values.length) return {map:{}, metrics:{}};
+
+  var head = values[0].map(function(h){ return String(h||'').trim(); });
+  var norm = head.map(norm_);
+  var rows = values.slice(1);
+
+  var monthIdx = firstIndex_(norm, ['month','period','date']);
+  var weekIdx  = findWeekDateColumn_(head, norm, rows);
+  var metricIdx = detectMetricColumns_(rows, head, norm, true);
+
+  var out = {}; var metrics = {}; var seqByYm = {};
+
+  rows.forEach(function(r){
+    var ym = ymFromAny_(r[monthIdx]); if (!ym) return;
+
+    var d = dateFromAny_(r[weekIdx]);
+    var ts;
+    if (d) {
+      d = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+      ts = Math.floor(d.getTime()/1000);
+    } else {
+      var seq=(seqByYm[ym]||0)+1; seqByYm[ym]=seq;
+      ts = pseudoTs_(ym+':'+seq);
+    }
+
+    var mbox = out[ym] || (out[ym] = {});
+    var w = mbox[ts] || (mbox[ts] = { label: '', ts: ts, weekly: {} });
+    if (d) w.date = isoDate_(d);
+
+    metricIdx.forEach(function(i){
+      var name = head[i]; var val = toNumber_(r[i]); if (val == null) return;
+      metrics[name]=1; w.weekly[name] = (w.weekly[name]||0) + val;
+    });
+  });
+
+  return { map: out, metrics: metrics };
+}
+
+function findWeekDateColumn_(head, norm, rows){
+  var prefer = ['week start','start_of_week','week date','start date','monday','start'];
+  for (var i=0;i<norm.length;i++){
+    for (var j=0;j<prefer.length;j++){
+      if (norm[i].indexOf(prefer[j]) !== -1 && columnLooksLikeDate_(rows, i)) return i;
+    }
+  }
+  var candidates = [];
+  for (var k=0;k<norm.length;k++){
+    if (norm[k]==='week') continue;
+    if (columnLooksLikeDate_(rows, k)) candidates.push(k);
+  }
+  return candidates.length ? candidates[0] : -1;
+}
+
+function columnLooksLikeDate_(rows, idx){
+  if (idx<0) return false;
+  var hits=0, total=0;
+  for (var i=0;i<rows.length;i++){
+    var v = rows[i][idx]; if (v==='' || v==null) continue;
+    total++; if (dateFromAny_(v)) hits++;
+  }
+  return total>0 && hits/Math.max(total,1) >= 0.5;
+}
+
+function getSheetSafe_(name){ try { return SpreadsheetApp.getActive().getSheetByName(name) || null; } catch(e){ return null; } }
+function norm_(s){ return String(s||'').toLowerCase().trim(); }
+
+function firstIndex_(normHeaders, needlesArr){
+  var needles = needlesArr.map(norm_);
+  for (var i=0;i<normHeaders.length;i++){
+    for (var j=0;j<needles.length;j++){
+      if (normHeaders[i].indexOf(needles[j]) !== -1) return i;
+    }
+  } return -1;
+}
+
+function detectMetricColumns_(rows, head, norm, excludeWeekCols){
+  var idx = [];
+  for (var i=0;i<head.length;i++){
+    var h = norm[i];
+    if (h.indexOf('month')!==-1 || h.indexOf('period')!==-1 || h.indexOf('date')!==-1) continue;
+    if (excludeWeekCols && (h.indexOf('week')!==-1 || h.indexOf('start')!==-1)) continue;
+    if (h==='label' || h==='id' || h==='ym' || h==='ts') continue;
+
+    var isMetric=false;
+    for (var r=0;r<rows.length;r++){
+      var v = rows[r][i];
+      if (isNumberLike_(v)) { isMetric=true; break; }
+    }
+    if (isMetric) idx.push(i);
+  }
+  return idx;
+}
+
+function isNumberLike_(v){ if (v==null || v==='') return false; if (typeof v==='number') return isFinite(v);
+  var s=String(v).replace(/[€,%\s,]/g,'').trim(); return s!=='' && !isNaN(+s); }
+function toNumber_(v){ if (!isNumberLike_(v)) return null; if (typeof v==='number') return v;
+  var s=String(v).replace(/[€,%\s,]/g,'').trim(); return Number(s)||0; }
+
+function ymFromAny_(v){
+  var d=dateFromAny_(v); if (d) return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2);
+  var s=String(v||'').trim(); var m=s.match(/^(\d{4})[-\/](\d{1,2})/);
+  return m?(m[1]+'-'+('0'+m[2]).slice(-2)):null;
+}
+
+function dateFromAny_(v){
+  if (Object.prototype.toString.call(v)==='[object Date]' && !isNaN(v)) return v;
+  var s=String(v||'').trim();
+  var m;
+  m=s.match(/^(\d{1,2})\.(\d{1,2})\.(\d{4})$/); if (m) return new Date(+m[3], +m[2]-1, +m[1]);
+  m=s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/); if (m) return new Date(+m[3], +m[2]-1, +m[1]);
+  m=s.match(/^(\d{4})[\/\-](\d{1,2})[\/\-](\d{1,2})$/); if (m) return new Date(+m[1], +m[2]-1, +m[3]);
+  return null;
+}
+
+function isoDate_(d){ return d.getFullYear()+'-'+('0'+(d.getMonth()+1)).slice(-2)+'-'+('0'+d.getDate()).slice(-2); }
+function monthLabelFromYm_(ym){
+  var p=ym.split('-'); var y=+p[0], m=+p[1];
+  var names=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  return names[m-1]+' '+y;
+}
+function pseudoTs_(s){ var h=0; for (var i=0;i<s.length;i++) h=((h<<5)-h)+s.charCodeAt(i)|0; return 1700000000 + (Math.abs(h)%1000000); }
+
+function mergeNameSets_(objA, objB){
+  var args = Array.prototype.slice.call(arguments), out = {};
+  args.forEach(function(o){ if (!o) return; Object.keys(o).forEach(function(k){ out[k]=1; }); });
+  return out;
+}
+function emptyFromNames_(namesObj){ var o={}; Object.keys(namesObj||{}).forEach(function(k){ o[k]=0; }); return o; }
+function copyAdd_(dst, src){ Object.keys(src||{}).forEach(function(k){ dst[k]=(dst[k]||0)+Number(src[k]||0); }); }
+function hasNonZero_(months, metric){
+  for (var i=0;i<(months||[]).length;i++){
+    var m=months[i];
+    if (Number(m.monthly && m.monthly[metric])>0) return true;
+    if (Number(m.sumWeeks && m.sumWeeks[metric])>0) return true;
+    for (var j=0;j<(m.weeks||[]).length;j++){
+      var w=m.weeks[j]; if (Number(w.weekly && w.weekly[metric])>0) return true;
+    }
+  } return false;
+}
+
+// ============================================
+// VIP DASHBOARD FILTERS
+// ============================================
+
+function getFilteredVIPDashboardData(filters) {
+  try {
+    Logger.log('=== VIP Dashboard Filtered Data Loading ===');
+    Logger.log('Filters: ' + JSON.stringify(filters));
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var vipSheet = ss.getSheetByName('VIP');
+    var silentVipSheet = ss.getSheetByName('SILENT VIP');
+    
+    if (!vipSheet || !silentVipSheet) {
+      return {
+        error: 'VIP or SILENT VIP sheet not found. Please ensure sheets are named exactly "VIP" and "SILENT VIP".'
+      };
+    }
+    
+    var vocabulary = getVocabulary();
+    var allVipPlayers = getVIPSheetData(vipSheet);
+    var allSilentVipPlayers = getVIPSheetData(silentVipSheet);
+    
+    Logger.log('Total VIP players before filtering: ' + allVipPlayers.length);
+    Logger.log('Total Silent VIP players before filtering: ' + allSilentVipPlayers.length);
+    
+    var filteredVipPlayers = filterVIPPlayers(allVipPlayers, filters, vocabulary);
+    var filteredSilentVipPlayers = filterVIPPlayers(allSilentVipPlayers, filters, vocabulary);
+    
+    Logger.log('Filtered VIP players: ' + filteredVipPlayers.length);
+    Logger.log('Filtered Silent VIP players: ' + filteredSilentVipPlayers.length);
+    
+    var metrics = calculateVIPMetrics(filteredVipPlayers, filteredSilentVipPlayers, vocabulary);
+    
+    var result = {
+      playerCounts: {
+        total: filteredVipPlayers.length + filteredSilentVipPlayers.length,
+        vip: filteredVipPlayers.length,
+        silentVip: filteredSilentVipPlayers.length
+      },
+      metrics: metrics,
+      vocabulary: vocabulary,
+      appliedFilters: filters
+    };
+    
+    Logger.log('Filtered data result prepared successfully');
+    return result;
+    
+  } catch (error) {
+    Logger.log('ERROR in getFilteredVIPDashboardData: ' + error.toString());
+    Logger.log('Stack trace: ' + error.stack);
+    return {
+      error: error.toString()
+    };
+  }
+}
+
+function filterVIPPlayers(players, filters, vocabulary) {
+  if (!filters) return players;
+  
+  Logger.log('=== Filtering VIP Players ===');
+  Logger.log('Initial count: ' + players.length);
+  Logger.log('Filters: ' + JSON.stringify(filters));
+  
+  var filtered = players.filter(function(player) {
+    // Manager filter (from tags)
+    if (filters.manager && filters.manager.length > 0) {
+      var playerManager = '';
+      if (player.tags) {
+        var tags = String(player.tags);
+        var managerMatch = tags.match(/manager:([^,\]]+)/i);
+        if (managerMatch) {
+          playerManager = managerMatch[1].trim();
+        }
+      }
+      if (!filters.manager.includes(playerManager)) {
+        return false;
+      }
+    }
+    
+    // Traffic Type filter - try multiple field names
+    if (filters.trafficType && filters.trafficType.length > 0) {
+      var playerTraffic = player.trafficType || player.traffic_type || player.type || player.playerType || '';
+      playerTraffic = String(playerTraffic).trim();
+      if (!filters.trafficType.includes(playerTraffic)) {
+        return false;
+      }
+    }
+    
+    // Country filter
+    if (filters.country && filters.country.length > 0) {
+      var playerCountry = String(player.country || '').trim();
+      if (!filters.country.includes(playerCountry)) {
+        return false;
+      }
+    }
+    
+    // Currency filter
+    if (filters.currency && filters.currency.length > 0) {
+      var playerCurrency = String(player.currency || '').trim();
+      if (!filters.currency.includes(playerCurrency)) {
+        return false;
+      }
+    }
+    
+    // Dynamic filters from Vocabulary
+    for (var filterKey in filters) {
+      if (filterKey !== 'manager' && filterKey !== 'trafficType' && 
+          filterKey !== 'country' && filterKey !== 'currency') {
+        
+        var filterValues = filters[filterKey];
+        if (filterValues && filterValues.length > 0) {
+          var playerValue = String(player[filterKey] || '').trim();
+          
+          // Normalize gender values
+          if (filterKey === 'gender') {
+            var playerGender = playerValue.toLowerCase();
+            var normalizedGender = '';
+            if (playerGender === 'm' || playerGender === 'male') {
+              normalizedGender = 'Male';
+            } else if (playerGender === 'f' || playerGender === 'female') {
+              normalizedGender = 'Female';
+            } else {
+              normalizedGender = 'Unknown';
+            }
+            playerValue = normalizedGender;
+          }
+          
+          if (!filterValues.includes(playerValue)) {
+            return false;
+          }
+        }
+      }
+    }
+    
+    return true;
+  });
+  
+  Logger.log('Filtered count: ' + filtered.length);
+  return filtered;
+}
+
+/**
+ * Get manager mapping from TAGS sheet
+ * Returns: { player_id: manager_name }
+ */
+/**
+ * Get tag-to-manager mapping from TAGS sheet
+ * Column A: tag (e.g. "ann_vip", "ann", "verified")
+ * Column B: Type (e.g. "VIP", "Silent", "Super VIP")
+ * Column C: Name (e.g. "Ann", "Kevin")
+ * Returns: { tag: manager_name }
+ * Example: { "ann_vip": "Ann", "ann": "Ann", "verified": "Kevin" }
+ */
+function getManagerMapping() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var tagsSheet = ss.getSheetByName('TAGS');
+    
+    if (!tagsSheet) {
+      Logger.log('TAGS sheet not found');
+      return {};
+    }
+    
+    var data = tagsSheet.getDataRange().getValues();
+    if (data.length < 2) return {};
+    
+    Logger.log('=== Reading TAGS sheet ===');
+    Logger.log('Total rows (including header): ' + data.length);
+    Logger.log('Header row: ' + JSON.stringify(data[0]));
+    
+    var mapping = {};
+    
+    // Start from row 1 (skip header row 0)
+    for (var i = 1; i < data.length; i++) {
+      var tag = String(data[i][0] || '').trim();      // Column A: tag
+      var type = String(data[i][1] || '').trim();     // Column B: Type (not used for mapping)
+      var name = String(data[i][2] || '').trim();     // Column C: Name
+      
+      Logger.log('Row ' + (i+1) + ': tag="' + tag + '", type="' + type + '", name="' + name + '"');
+      
+      if (tag && name) {
+        mapping[tag] = name;
+        Logger.log('  → Mapped: "' + tag + '" → "' + name + '"');
+      } else {
+        Logger.log('  → Skipped (missing tag or name)');
+      }
+    }
+    
+    Logger.log('Tag-to-manager mapping from TAGS (new structure): ' + JSON.stringify(mapping));
+    Logger.log('Total tags mapped: ' + Object.keys(mapping).length);
+    
+    // Show each mapping for debug
+    for (var tag in mapping) {
+      Logger.log('  "' + tag + '" → "' + mapping[tag] + '"');
+    }
+    
+    return mapping;
+    
+  } catch (error) {
+    Logger.log('ERROR in getManagerMapping: ' + error.toString());
+    return {};
+  }
+}
+
+/**
+
+/**
+ * Extract STAG prefix (before "_") from full stag
+ * Example: "74494_69496e021b8271b5f7f" → "74494"
+ */
+function getStagPrefix(fullStag) {
+  if (!fullStag) return '';
+  var stagStr = String(fullStag);
+  var underscoreIdx = stagStr.indexOf('_');
+  if (underscoreIdx > 0) {
+    return stagStr.substring(0, underscoreIdx);
+  }
+  return stagStr;
+}
+
+/**
+ * Scan all sheets and group them by prefix in parentheses
+ * Returns config for dynamic VIP-style tabs
+ * Example: "(VIP DASHBOARD) VIP" → group: "VIP DASHBOARD", suffix: "VIP"
+ */
+function getVIPTabsConfig() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var allSheets = ss.getSheets();
+    
+    var groups = {};
+    var regex = /^\(([^)]+)\)\s+(.+)$/; // Matches: (PREFIX) Suffix
+    
+    allSheets.forEach(function(sheet) {
+      var name = sheet.getName();
+      var match = name.match(regex);
+      
+      if (match) {
+        var prefix = match[1].trim();      // "VIP DASHBOARD"
+        var suffix = match[2].trim();      // "VIP" or "SILENT VIP"
+        
+        if (!groups[prefix]) {
+          groups[prefix] = {
+            sheets: [],
+            displayName: toTitleCase(prefix.toLowerCase()),
+            id: prefix.toLowerCase().replace(/\s+/g, '_')
+          };
+        }
+        
+        groups[prefix].sheets.push({
+          fullName: name,
+          suffix: suffix,
+          sheetObject: sheet
+        });
+      }
+    });
+    
+    Logger.log('=== VIP Tabs Config ===');
+    Logger.log('Found ' + Object.keys(groups).length + ' tab groups');
+    
+    Object.keys(groups).forEach(function(prefix) {
+      Logger.log('Group "' + prefix + '": ' + groups[prefix].sheets.length + ' sheets');
+      groups[prefix].sheets.forEach(function(s) {
+        Logger.log('  - ' + s.fullName);
+      });
+    });
+    
+    return groups;
+    
+  } catch (error) {
+    Logger.log('ERROR in getVIPTabsConfig: ' + error.toString());
+    return {};
+  }
+}
+
+/**
+ * Convert string to Title Case
+ * "VIP DASHBOARD" → "Vip Dashboard"
+ */
+function toTitleCase(str) {
+  return str.replace(/\w\S*/g, function(txt) {
+    return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
+  });
+}
+
+/**
+ * Get data for a specific VIP-style tab group
+ * @param {string} groupId - ID of the group (e.g. "vip_dashboard", "one_day")
+ */
+function getVIPGroupData(groupId) {
+  try {
+    var config = getVIPTabsConfig();
+    var group = null;
+    
+    // Find group by ID
+    Object.keys(config).forEach(function(prefix) {
+      if (config[prefix].id === groupId) {
+        group = config[prefix];
+      }
+    });
+    
+    if (!group) {
+      return { error: 'Group not found: ' + groupId };
+    }
+    
+    var allPlayers = [];
+    
+    // Collect data from all sheets in this group
+    group.sheets.forEach(function(sheetInfo) {
+      var sheet = sheetInfo.sheetObject;
+      var players = getVIPSheetData(sheet);
+      
+      // Add vipType based on suffix
+      players.forEach(function(player) {
+        player.vipType = sheetInfo.suffix; // "VIP" or "SILENT VIP"
+        player.sourceSheet = sheetInfo.fullName;
+      });
+      
+      allPlayers = allPlayers.concat(players);
+    });
+    
+    Logger.log('getVIPGroupData(' + groupId + '): ' + allPlayers.length + ' total players');
+    
+    // Get vocabulary
+    var vocabulary = getVocabulary();
+    
+    // Split players by vipType for metrics calculation
+    var vipPlayers = [];
+    var silentVipPlayers = [];
+    
+    allPlayers.forEach(function(player) {
+      // Categorize by vipType:
+      // If contains "silent" → Silent VIP category
+      // Otherwise → VIP category
+      var type = String(player.vipType || '').toLowerCase();
+      
+      if (type.indexOf('silent') >= 0) {
+        silentVipPlayers.push(player);
+      } else {
+        vipPlayers.push(player);
+      }
+    });
+    
+    Logger.log('Players split: VIP=' + vipPlayers.length + ', Silent/Pre=' + silentVipPlayers.length);
+    
+    // Calculate metrics
+    var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary);
+    
+    return {
+      groupId: groupId,
+      displayName: group.displayName,
+      sheets: group.sheets.map(function(s) { return s.fullName; }),
+      players: allPlayers,
+      playerCounts: {
+        vip: vipPlayers.length,
+        silentVip: silentVipPlayers.length,
+        total: allPlayers.length
+      },
+      metrics: metrics,
+      vocabulary: vocabulary,
+      allPlayers: {
+        vip: vipPlayers,
+        silentVip: silentVipPlayers
+      }
+    };
+    
+  } catch (error) {
+    Logger.log('ERROR in getVIPGroupData: ' + error.toString());
+    return { error: error.toString() };
+  }
+}
+
+function getVIPFilterOptions() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // Try dynamic system first
+    var groupData = getVIPGroupData('vip_dashboard');
+    
+    var vipPlayers = [];
+    var silentVipPlayers = [];
+    var allPlayers = [];
+    
+    if (groupData && !groupData.error && groupData.players) {
+      Logger.log('=== VIP Filter Options (Dynamic System) ===');
+      allPlayers = groupData.players;
+      
+      // Split by vipType
+      allPlayers.forEach(function(player) {
+        if (player.vipType === 'VIP') {
+          vipPlayers.push(player);
+        } else if (player.vipType === 'SILENT VIP') {
+          silentVipPlayers.push(player);
+        }
+      });
+      
+    } else {
+      // Fallback to legacy system
+      Logger.log('=== VIP Filter Options (Legacy System) ===');
+      var vipSheet = ss.getSheetByName('VIP');
+      var silentVipSheet = ss.getSheetByName('SILENT VIP');
+      
+      if (!vipSheet || !silentVipSheet) {
+        return { error: 'VIP sheets not found' };
+      }
+      
+      vipPlayers = getVIPSheetData(vipSheet);
+      silentVipPlayers = getVIPSheetData(silentVipSheet);
+      allPlayers = vipPlayers.concat(silentVipPlayers);
+    }
+    
+    Logger.log('=== VIP Filter Options Debug ===');
+    Logger.log('VIP sheet players: ' + vipPlayers.length);
+    Logger.log('SILENT VIP sheet players: ' + silentVipPlayers.length);
+    Logger.log('Total players: ' + allPlayers.length);
+    
+    // Get mappings from TAGS and General Info
+    var managerMapping = getManagerMapping();
+    var trafficMapping = getTrafficTypeMapping();
+    
+    Logger.log('Manager mapping size: ' + Object.keys(managerMapping).length);
+    Logger.log('Traffic mapping size: ' + Object.keys(trafficMapping).length);
+    
+    var managers = {};
+    var trafficTypes = {};
+    
+    // Sample first 3 players to see their tags
+    Logger.log('Sample player tags (first 3 VIP):');
+    for (var i = 0; i < Math.min(3, vipPlayers.length); i++) {
+      var p = vipPlayers[i];
+      Logger.log('VIP Player ' + (p.id || i) + ' tags: ' + JSON.stringify(p.tags) + ' (type: ' + typeof p.tags + ', isArray: ' + Array.isArray(p.tags) + ')');
+    }
+    
+    Logger.log('Sample player tags (first 3 SILENT VIP):');
+    for (var i = 0; i < Math.min(3, silentVipPlayers.length); i++) {
+      var p = silentVipPlayers[i];
+      Logger.log('SILENT VIP Player ' + (p.id || i) + ' tags: ' + JSON.stringify(p.tags) + ' (type: ' + typeof p.tags + ', isArray: ' + Array.isArray(p.tags) + ')');
+    }
+    
+    var playersWithTags = 0;
+    var playersWithManagers = 0;
+    var vipWithManagers = 0;
+    var silentWithManagers = 0;
+    
+    // Helper: Get player's manager from tags with priority
+    // Priority: longer/more specific tags first (e.g. "verified" over "ann")
+    function getPlayerManager(tags, mapping) {
+      if (!tags || !Array.isArray(tags)) return null;
+      
+      var matches = [];
+      for (var i = 0; i < tags.length; i++) {
+        var tag = String(tags[i]).trim();
+        if (mapping[tag]) {
+          matches.push({
+            tag: tag,
+            manager: mapping[tag],
+            priority: tag.length  // Longer tags = more specific = higher priority
+          });
+        }
+      }
+      
+      if (matches.length === 0) return null;
+      
+      // Sort by priority (longer tags first)
+      matches.sort(function(a, b) { return b.priority - a.priority; });
+      
+      return {
+        manager: matches[0].manager,
+        tag: matches[0].tag,
+        allMatches: matches
+      };
+    }
+    
+    // Process VIP players
+    vipPlayers.forEach(function(player) {
+      if (player.tags && Array.isArray(player.tags)) {
+        playersWithTags++;
+        var result = getPlayerManager(player.tags, managerMapping);
+        if (result) {
+          managers[result.manager] = true;
+          playersWithManagers++;
+          vipWithManagers++;
+          Logger.log('VIP Player ' + player.id + ' matched tag "' + result.tag + '" → manager "' + result.manager + '"' +
+                    (result.allMatches.length > 1 ? ' (had ' + result.allMatches.length + ' matches, picked most specific)' : ''));
+        } else {
+          Logger.log('VIP Player ' + player.id + ' has tags ' + JSON.stringify(player.tags) + ' but NO manager found');
+        }
+      }
+      
+      if (player.stag) {
+        var stagPrefix = getStagPrefix(player.stag);
+        if (stagPrefix && trafficMapping[stagPrefix]) {
+          var trafficType = trafficMapping[stagPrefix];
+          trafficTypes[trafficType] = true;
+        }
+      }
+    });
+    
+    // Process SILENT VIP players
+    silentVipPlayers.forEach(function(player) {
+      if (player.tags && Array.isArray(player.tags)) {
+        playersWithTags++;
+        var result = getPlayerManager(player.tags, managerMapping);
+        if (result) {
+          managers[result.manager] = true;
+          playersWithManagers++;
+          silentWithManagers++;
+          Logger.log('SILENT Player ' + player.id + ' matched tag "' + result.tag + '" → manager "' + result.manager + '"' +
+                    (result.allMatches.length > 1 ? ' (had ' + result.allMatches.length + ' matches, picked most specific)' : ''));
+        } else {
+          Logger.log('SILENT Player ' + player.id + ' has tags ' + JSON.stringify(player.tags) + ' but NO manager found');
+        }
+      }
+      
+      if (player.stag) {
+        var stagPrefix = getStagPrefix(player.stag);
+        if (stagPrefix && trafficMapping[stagPrefix]) {
+          var trafficType = trafficMapping[stagPrefix];
+          trafficTypes[trafficType] = true;
+        }
+      }
+    });
+    
+    Logger.log('Players with tags array: ' + playersWithTags + ' / ' + allPlayers.length);
+    Logger.log('Players with manager tags: ' + playersWithManagers + ' (VIP: ' + vipWithManagers + ', Silent: ' + silentWithManagers + ')');
+    
+    var managersList = Object.keys(managers).sort();
+    var trafficTypesList = Object.keys(trafficTypes).sort();
+    
+    Logger.log('=== FINAL RESULTS ===');
+    Logger.log('Managers found (' + managersList.length + '): ' + managersList.join(', '));
+    Logger.log('Manager details:');
+    managersList.forEach(function(m) {
+      Logger.log('  Manager "' + m + '" exists in final list');
+    });
+    Logger.log('Traffic types found (' + trafficTypesList.length + '): ' + trafficTypesList.join(', '));
+    
+    return {
+      managers: managersList,
+      trafficTypes: trafficTypesList,
+      managerMapping: managerMapping,
+      trafficMapping: trafficMapping
+    };
+    
+  } catch (error) {
+    Logger.log('ERROR in getVIPFilterOptions: ' + error.toString());
+    return { error: error.toString() };
+  }
+}
+/**
+ * Create a new Google Sheet with exported data from modal
+ */
+function createExportSheet(sheetName, data) {
+  try {
+    // Create new spreadsheet
+    const ss = SpreadsheetApp.create(sheetName + ' - Export');
+    const sheet = ss.getActiveSheet();
+    sheet.setName('Data');
+    
+    // Write data
+    if (data && data.length > 0) {
+      sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
+      
+      // Format header row
+      const headerRange = sheet.getRange(1, 1, 1, data[0].length);
+      headerRange.setBackground('#667eea');
+      headerRange.setFontColor('#ffffff');
+      headerRange.setFontWeight('bold');
+      headerRange.setHorizontalAlignment('center');
+      
+      // Auto-resize columns
+      for (let i = 1; i <= data[0].length; i++) {
+        sheet.autoResizeColumn(i);
+      }
+      
+      // Freeze header row
+      sheet.setFrozenRows(1);
+      
+      // Add filters
+      sheet.getRange(1, 1, data.length, data[0].length).createFilter();
+      
+      Logger.log('Created export sheet: ' + ss.getUrl());
+    }
+    
+    return ss.getUrl();
+    
+  } catch (error) {
+    Logger.log('ERROR in createExportSheet: ' + error.toString());
+    throw new Error('Failed to create export sheet: ' + error.message);
+  }
+}
+
+/*************************************************
+ * PLAYER PROFILING - ДОДАНО
+ *************************************************/
+function getPlayerProfilingData() {
+  var output = { managers: [], fieldConfig: {}, success: false, error: null };
+  
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var allSheets = ss.getSheets();
+    
+    for (var i = 0; i < allSheets.length; i++) {
+      var sheet = allSheets[i];
+      var sheetName = sheet.getName();
+      
+      if (sheetName.indexOf('[PROFILING]') !== 0) continue;
+      
+      var managerName = sheetName.replace('[PROFILING]', '').trim();
+      var allData = sheet.getDataRange().getValues();
+      
+      if (allData.length < 2) {
+        output.managers.push({ name: managerName, players: [] });
+        continue;
+      }
+      
+      var headerRow = allData[0];
+      var emailColumnIndex = -1;
+      var tagsColumnIndex = -1;
+      
+      for (var h = 0; h < headerRow.length; h++) {
+        var headerText = String(headerRow[h] || '').toLowerCase().trim();
+        if (headerText.indexOf('email') !== -1 && emailColumnIndex === -1) emailColumnIndex = h;
+        if (headerText === 'tags' || headerText === 'tag') tagsColumnIndex = h;
+      }
+      
+      if (emailColumnIndex === -1) {
+        output.managers.push({ name: managerName, players: [] });
+        continue;
+      }
+      
+      var playersList = [];
+      
+      for (var r = 1; r < allData.length; r++) {
+        var rowData = allData[r];
+        var playerEmail = String(rowData[emailColumnIndex] || '').trim();
+        if (!playerEmail) continue;
+        
+        var playerObject = { email: playerEmail };
+        
+        for (var c = 0; c < headerRow.length; c++) {
+          var fieldName = String(headerRow[c] || '').trim();
+          if (!fieldName) continue;
+          
+          var cellValue = rowData[c];
+          
+          if (c === tagsColumnIndex && cellValue) {
+            try {
+              if (typeof cellValue === 'string') {
+                var trimmed = cellValue.trim();
+                if (trimmed.charAt(0) === '[') {
+                  cellValue = JSON.parse(trimmed);
+                } else if (trimmed.length > 0) {
+                  cellValue = [trimmed];
+                } else {
+                  cellValue = [];
+                }
+              } else if (!Array.isArray(cellValue)) {
+                cellValue = [];
+              }
+            } catch (e) { cellValue = []; }
+          }
+          
+          playerObject[fieldName] = cellValue;
+        }
+        
+        playersList.push(playerObject);
+      }
+      
+      output.managers.push({ name: managerName, players: playersList });
+    }
+    
+    output.success = true;
+  } catch (mainError) {
+    output.error = mainError.toString();
+  }
+  
+  return output;
+}
