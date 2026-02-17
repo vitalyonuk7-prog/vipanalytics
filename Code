@@ -10,6 +10,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu('🌪️ Slotornado')
     .addItem('📊 Open App', 'openDepositApp')
+    .addItem('💎 Bonus Calculator', 'openBonusCalculator')
     .addSeparator()
     .addItem('🔍 Діагностика', 'diagnosticSheets')
     .addToUi();
@@ -21,6 +22,12 @@ function openDepositApp() {
   SpreadsheetApp.getUi().showModelessDialog(html, 'Slotornado Analytics');
 }
 
+function openBonusCalculator() {
+  var html = HtmlService.createHtmlOutputFromFile('BonusCalc')
+    .setWidth(1400).setHeight(900);
+  SpreadsheetApp.getUi().showModalDialog(html, '💎 Bonus Calculator');
+}
+
 /******************** WEB ENTRYPOINT ********************/
 function doGet(e) {
   return HtmlService.createHtmlOutputFromFile('App')
@@ -30,20 +37,88 @@ function doGet(e) {
 
 /******************** TYPE MAPPING ********************/
 function getTypeMapping() {
-  var mapping = {};
+  var result = { tagToType: {}, typeMapping: {} };
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('[TYPE]');
+    // Try both "TYPE" and "[TYPE]" sheet names
+    var sheet = ss.getSheetByName('TYPE') || ss.getSheetByName('[TYPE]');
     if (sheet) {
       var data = sheet.getDataRange().getValues();
       for (var i = 1; i < data.length; i++) {
-        var tag = String(data[i][0] || '').toLowerCase().trim();
-        var type = String(data[i][1] || '').trim();
-        if (tag && type) mapping[tag] = type;
+        var typeName = String(data[i][0] || '').trim();
+        var tagsRaw = String(data[i][1] || '').trim();
+        if (!typeName || !tagsRaw) continue;
+        
+        // Parse tags - can be JSON array or single tag
+        var tags = [];
+        if (tagsRaw.charAt(0) === '[') {
+          try { tags = JSON.parse(tagsRaw); } catch(e) { tags = [tagsRaw]; }
+        } else {
+          tags = tagsRaw.split(',').map(function(t) { return t.trim(); });
+        }
+        
+        if (!result.typeMapping[typeName]) result.typeMapping[typeName] = [];
+        
+        tags.forEach(function(tag) {
+          var t = String(tag).toLowerCase().trim().replace(/"/g, '');
+          if (t) {
+            result.tagToType[t] = typeName;
+            result.typeMapping[typeName].push(t);
+          }
+        });
       }
     }
-  } catch (e) {}
-  return mapping;
+    Logger.log('TYPE mapping loaded: ' + Object.keys(result.tagToType).length + ' tags → ' + Object.keys(result.typeMapping).length + ' types');
+  } catch (e) {
+    Logger.log('Error loading TYPE mapping: ' + e);
+  }
+  return result;
+}
+
+/**
+ * Get MANAGER mapping from MANAGER sheet
+ * Structure: Col A = Manager name, Col B = tags (JSON array)
+ * Returns: { tagToManager: {tag: managerName}, managerMapping: {managerName: [tags]} }
+ */
+function getManagerMapping() {
+  var result = { tagToManager: {}, managerMapping: {} };
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('MANAGER') || ss.getSheetByName('[MANAGER]');
+    if (!sheet) {
+      Logger.log('MANAGER sheet not found');
+      return result;
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      var managerName = String(data[i][0] || '').trim();
+      var tagsRaw = String(data[i][1] || '').trim();
+      if (!managerName || !tagsRaw) continue;
+      
+      var tags = [];
+      if (tagsRaw.charAt(0) === '[') {
+        try { tags = JSON.parse(tagsRaw); } catch(e) { tags = [tagsRaw]; }
+      } else {
+        tags = tagsRaw.split(',').map(function(t) { return t.trim(); });
+      }
+      
+      if (!result.managerMapping[managerName]) result.managerMapping[managerName] = [];
+      
+      tags.forEach(function(tag) {
+        var t = String(tag).toLowerCase().trim().replace(/"/g, '');
+        if (t) {
+          result.tagToManager[t] = managerName;
+          result.managerMapping[managerName].push(t);
+        }
+      });
+    }
+    
+    Logger.log('MANAGER mapping loaded: ' + Object.keys(result.tagToManager).length + ' tags → ' + Object.keys(result.managerMapping).length + ' managers');
+  } catch (e) {
+    Logger.log('Error loading MANAGER mapping: ' + e);
+  }
+  return result;
 }
 
 /******************** RETENTION WEEKLY ********************/
@@ -701,7 +776,10 @@ function getWeeklyRetentionData() {
     if (startParts.length !== 2) return null;
     var day = parseInt(startParts[0]);
     var month = parseInt(startParts[1]);
-    var year = month >= 7 ? 2024 : 2025;
+    var now = new Date();
+    var currentYear = now.getFullYear();
+    // If month is in the future relative to current month, assume previous year
+    var year = (month > now.getMonth() + 1) ? currentYear - 1 : currentYear;
     return new Date(year, month - 1, day);
   }
   
@@ -871,16 +949,11 @@ function getRetentionData() {
   var ftdSheets = [];
   var activeSheets = [];
   
-  // Weekly pattern: DD.MM - DD.MM
   var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
   
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
-    
-    // Skip weekly sheets - only process monthly
-    if (weekPattern.test(name)) {
-      return; // Skip this sheet
-    }
+    if (weekPattern.test(name)) return;
     
     if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
       ftdSheets.push(sheet);
@@ -889,18 +962,14 @@ function getRetentionData() {
     }
   });
   
-  ftdSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
+  ftdSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
+  activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   
-  activeSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
+  Logger.log('=== getRetentionData ===');
+  Logger.log('FTD sheets: ' + ftdSheets.map(function(s) { return s.getName(); }).join(', '));
+  Logger.log('ACTIVE sheets: ' + activeSheets.map(function(s) { return s.getName(); }).join(', '));
   
-  var result = {
-    months: [],
-    rows: []
-  };
+  var result = { months: [], rows: [] };
   
   activeSheets.forEach(function(sheet) {
     var monthName = extractMonthName(sheet.getName());
@@ -915,11 +984,9 @@ function getRetentionData() {
     var ftdCount = ftdData.length;
     var ftdPlayerIds = ftdData.map(function(p) { return p.id; });
     
-    var row = {
-      month: ftdMonth,
-      ftdCount: ftdCount,
-      retention: []
-    };
+    Logger.log('FTD "' + ftdName + '": ' + ftdCount + ' players, sample IDs: ' + ftdPlayerIds.slice(0, 3).join(', '));
+    
+    var row = { month: ftdMonth, ftdCount: ftdCount, retention: [] };
     
     for (var i = ftdIdx; i < activeSheets.length; i++) {
       var activeSheet = activeSheets[i];
@@ -927,11 +994,16 @@ function getRetentionData() {
       
       var retainedCount = 0;
       ftdPlayerIds.forEach(function(ftdId) {
-        var found = activeData.some(function(p) {
-          return p.id === ftdId;
-        });
+        var found = activeData.some(function(p) { return p.id === ftdId; });
         if (found) retainedCount++;
       });
+      
+      // Debug: log if 0 retained but both sheets have data
+      if (retainedCount === 0 && ftdCount > 0 && activeData.length > 0) {
+        Logger.log('⚠️ 0 retained: "' + ftdName + '" (' + ftdCount + ' players) vs "' + activeSheet.getName() + '" (' + activeData.length + ' players)');
+        Logger.log('  FTD IDs sample: ' + ftdPlayerIds.slice(0, 3).join(', '));
+        Logger.log('  ACTIVE IDs sample: ' + activeData.slice(0, 3).map(function(p) { return p.id; }).join(', '));
+      }
       
       row.retention.push({
         count: retainedCount,
@@ -1065,8 +1137,14 @@ function getSheetData(sheet) {
   var depositCountIdx = -1;
   
   for (var i = 0; i < headers.length; i++) {
-    if (headers[i] === 'id') idIdx = i;
-    if (headers[i] === 'lifetime_deposit_count_total') depositCountIdx = i;
+    var h = String(headers[i] || '').toLowerCase().trim();
+    if (h === 'id' && idIdx === -1) idIdx = i;
+    if (h === 'lifetime_deposit_count_total') depositCountIdx = i;
+  }
+  
+  if (idIdx === -1) {
+    Logger.log('WARNING: getSheetData - no "id" column found in sheet: ' + sheet.getName() + ', headers: ' + headers.join(', '));
+    return [];
   }
   
   var result = [];
@@ -1076,7 +1154,7 @@ function getSheetData(sheet) {
     
     result.push({
       id: String(row[idIdx]).trim(),
-      depositCount: Number(row[depositCountIdx]) || 0
+      depositCount: depositCountIdx !== -1 ? (Number(row[depositCountIdx]) || 0) : 0
     });
   }
   
@@ -1294,13 +1372,14 @@ function getDetailedSheetData(sheet) {
   var stagIdx = -1;
   
   for (var i = 0; i < headers.length; i++) {
-    if (headers[i] === 'id') idIdx = i;
-    if (headers[i] === 'email') emailIdx = i;
-    if (headers[i] === 'country') countryIdx = i;
-    if (headers[i] === 'disabled') statusIdx = i;
-    if (headers[i] === 'lifetime_deposit_count_total') depositCountIdx = i;
-    if (headers[i] === 'tags') tagsIdx = i;
-    if (headers[i] === 'stag') stagIdx = i;
+    var h = String(headers[i] || '').toLowerCase().trim();
+    if (h === 'id' && idIdx === -1) idIdx = i;
+    if (h === 'email' && emailIdx === -1) emailIdx = i;
+    if (h === 'country' && countryIdx === -1) countryIdx = i;
+    if (h === 'disabled') statusIdx = i;
+    if (h === 'lifetime_deposit_count_total') depositCountIdx = i;
+    if (h === 'tags') tagsIdx = i;
+    if (h === 'stag') stagIdx = i;
   }
   
   var trafficMapping = getTrafficTypeMapping();
@@ -1365,15 +1444,30 @@ function getCellPlayersRetention(params) {
   var ftdData = ftdSheet.getDataRange().getValues();
   var ftdHeaders = ftdData[0];
   var ftdIdIdx = -1;
+  var ftdEmailIdx = -1;
+  var ftdCountryIdx = -1;
+  var ftdTagsIdx = -1;
   
   for (var i = 0; i < ftdHeaders.length; i++) {
-    if (ftdHeaders[i] === 'id') ftdIdIdx = i;
+    var h = String(ftdHeaders[i] || '').toLowerCase().trim();
+    if (h === 'id' && ftdIdIdx === -1) ftdIdIdx = i;
+    if (h === 'email' && ftdEmailIdx === -1) ftdEmailIdx = i;
+    if (h === 'country' && ftdCountryIdx === -1) ftdCountryIdx = i;
+    if (h === 'tags') ftdTagsIdx = i;
   }
   
   var ftdPlayerIds = [];
+  var ftdPlayersMap = {};
   for (var i = 1; i < ftdData.length; i++) {
-    var id = String(ftdData[i][ftdIdIdx] || '').trim();
-    if (id) ftdPlayerIds.push(id);
+    var id = ftdIdIdx !== -1 ? String(ftdData[i][ftdIdIdx] || '').trim() : '';
+    if (id) {
+      ftdPlayerIds.push(id);
+      ftdPlayersMap[id] = {
+        email: ftdEmailIdx !== -1 ? String(ftdData[i][ftdEmailIdx] || '') : '',
+        country: ftdCountryIdx !== -1 ? String(ftdData[i][ftdCountryIdx] || '') : '',
+        tags: ftdTagsIdx !== -1 ? String(ftdData[i][ftdTagsIdx] || '') : ''
+      };
+    }
   }
   
   var activePlayersData = getDetailedSheetData(activeSheet);
@@ -1401,7 +1495,16 @@ function getCellPlayersRetention(params) {
     }
     
     if (!found) {
-      // dropped
+      var ftdInfo = ftdPlayersMap[ftdId] || {};
+      dropped.push({
+        id: ftdId,
+        email: ftdInfo.email || '',
+        country: ftdInfo.country || '',
+        status: 'dropped',
+        tags: ftdInfo.tags || '',
+        trafficType: '',
+        actualDeposits: 0
+      });
     }
   });
   
@@ -1441,15 +1544,30 @@ function getCellPlayersRetentionWeekly(params) {
   var ftdData = ftdSheet.getDataRange().getValues();
   var ftdHeaders = ftdData[0];
   var ftdIdIdx = -1;
+  var ftdEmailIdx = -1;
+  var ftdCountryIdx = -1;
+  var ftdTagsIdx = -1;
   
   for (var i = 0; i < ftdHeaders.length; i++) {
-    if (ftdHeaders[i] === 'id') ftdIdIdx = i;
+    var h = String(ftdHeaders[i] || '').toLowerCase().trim();
+    if (h === 'id' && ftdIdIdx === -1) ftdIdIdx = i;
+    if (h === 'email' && ftdEmailIdx === -1) ftdEmailIdx = i;
+    if (h === 'country' && ftdCountryIdx === -1) ftdCountryIdx = i;
+    if (h === 'tags') ftdTagsIdx = i;
   }
   
   var ftdPlayerIds = [];
+  var ftdPlayersMap = {};
   for (var i = 1; i < ftdData.length; i++) {
-    var id = String(ftdData[i][ftdIdIdx] || '').trim();
-    if (id) ftdPlayerIds.push(id);
+    var id = ftdIdIdx !== -1 ? String(ftdData[i][ftdIdIdx] || '').trim() : '';
+    if (id) {
+      ftdPlayerIds.push(id);
+      ftdPlayersMap[id] = {
+        email: ftdEmailIdx !== -1 ? String(ftdData[i][ftdEmailIdx] || '') : '',
+        country: ftdCountryIdx !== -1 ? String(ftdData[i][ftdCountryIdx] || '') : '',
+        tags: ftdTagsIdx !== -1 ? String(ftdData[i][ftdTagsIdx] || '') : ''
+      };
+    }
   }
   
   var activePlayersData = getDetailedSheetData(activeSheet);
@@ -1477,7 +1595,16 @@ function getCellPlayersRetentionWeekly(params) {
     }
     
     if (!found) {
-      // dropped
+      var ftdInfo = ftdPlayersMap[ftdId] || {};
+      dropped.push({
+        id: ftdId,
+        email: ftdInfo.email || '',
+        country: ftdInfo.country || '',
+        status: 'dropped',
+        tags: ftdInfo.tags || '',
+        trafficType: '',
+        actualDeposits: 0
+      });
     }
   });
   
@@ -2160,59 +2287,6 @@ function filterVIPPlayers(players, filters, vocabulary) {
  * Returns: { tag: manager_name }
  * Example: { "ann_vip": "Ann", "ann": "Ann", "verified": "Kevin" }
  */
-function getManagerMapping() {
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var tagsSheet = ss.getSheetByName('TAGS');
-    
-    if (!tagsSheet) {
-      Logger.log('TAGS sheet not found');
-      return {};
-    }
-    
-    var data = tagsSheet.getDataRange().getValues();
-    if (data.length < 2) return {};
-    
-    Logger.log('=== Reading TAGS sheet ===');
-    Logger.log('Total rows (including header): ' + data.length);
-    Logger.log('Header row: ' + JSON.stringify(data[0]));
-    
-    var mapping = {};
-    
-    // Start from row 1 (skip header row 0)
-    for (var i = 1; i < data.length; i++) {
-      var tag = String(data[i][0] || '').trim();      // Column A: tag
-      var type = String(data[i][1] || '').trim();     // Column B: Type (not used for mapping)
-      var name = String(data[i][2] || '').trim();     // Column C: Name
-      
-      Logger.log('Row ' + (i+1) + ': tag="' + tag + '", type="' + type + '", name="' + name + '"');
-      
-      if (tag && name) {
-        mapping[tag] = name;
-        Logger.log('  → Mapped: "' + tag + '" → "' + name + '"');
-      } else {
-        Logger.log('  → Skipped (missing tag or name)');
-      }
-    }
-    
-    Logger.log('Tag-to-manager mapping from TAGS (new structure): ' + JSON.stringify(mapping));
-    Logger.log('Total tags mapped: ' + Object.keys(mapping).length);
-    
-    // Show each mapping for debug
-    for (var tag in mapping) {
-      Logger.log('  "' + tag + '" → "' + mapping[tag] + '"');
-    }
-    
-    return mapping;
-    
-  } catch (error) {
-    Logger.log('ERROR in getManagerMapping: ' + error.toString());
-    return {};
-  }
-}
-
-/**
-
 /**
  * Extract STAG prefix (before "_") from full stag
  * Example: "74494_69496e021b8271b5f7f" → "74494"
@@ -2290,6 +2364,158 @@ function toTitleCase(str) {
   return str.replace(/\w\S*/g, function(txt) {
     return txt.charAt(0).toUpperCase() + txt.substr(1).toLowerCase();
   });
+}
+
+/**
+ * Get unified dashboard data from single DASHBOARD sheet.
+ * Groups players by type (VIP/Previp/etc) detected from tags.
+ * Falls back to old prefix-based system if DASHBOARD sheet not found.
+ */
+function getUnifiedDashboardData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var dashSheet = ss.getSheetByName('DASHBOARD');
+    
+    if (!dashSheet) {
+      Logger.log('DASHBOARD sheet not found, falling back to prefix system');
+      return getUnifiedFromPrefixSystem();
+    }
+    
+    Logger.log('=== Reading DASHBOARD sheet ===');
+    var allPlayers = getVIPSheetData(dashSheet);
+    Logger.log('Total players in DASHBOARD: ' + allPlayers.length);
+    
+    var vocabulary = getVocabulary();
+    var managerResult = getManagerMapping();
+    var tagToManager = managerResult.tagToManager;
+    var typeMappingResult = getTypeMapping();
+    var tagToType = typeMappingResult.tagToType;
+    
+    Logger.log('TYPE mapping: ' + Object.keys(tagToType).length + ' tags → ' + Object.keys(typeMappingResult.typeMapping).length + ' types');
+    
+    // Determine type for each player from tags using TYPE sheet
+    var typeGroups = {};
+    
+    allPlayers.forEach(function(player) {
+      var typeInfo = detectPlayerType(player.tags, tagToType);
+      player.dashboardType = typeInfo.type;
+      player.vipType = typeInfo.subType || typeInfo.type;
+      
+      if (!typeGroups[typeInfo.type]) typeGroups[typeInfo.type] = [];
+      typeGroups[typeInfo.type].push(player);
+    });
+    
+    var typeNames = Object.keys(typeGroups).sort();
+    Logger.log('Detected types: ' + typeNames.join(', '));
+    
+    // Build result for each type
+    var typesData = {};
+    typeNames.forEach(function(typeName) {
+      var players = typeGroups[typeName];
+      var metrics = calculateVIPMetrics(players, [], vocabulary);
+      
+      typesData[typeName] = {
+        groupId: typeName.toLowerCase().replace(/\s+/g, '_'),
+        displayName: typeName,
+        metrics: metrics,
+        vocabulary: vocabulary,
+        playerCounts: { vip: players.length, silentVip: 0, total: players.length },
+        allPlayers: { vip: players, silentVip: [] }
+      };
+    });
+    
+    return {
+      source: 'DASHBOARD',
+      types: typeNames,
+      typesData: typesData,
+      vocabulary: vocabulary,
+      managerMapping: tagToManager,
+      managers: Object.keys(managerResult.managerMapping).sort(),
+      typeMapping: typeMappingResult.typeMapping
+    };
+    
+  } catch (error) {
+    Logger.log('ERROR in getUnifiedDashboardData: ' + error.toString());
+    return { error: error.toString() };
+  }
+}
+
+/**
+ * Fall back: build unified data from old prefix-based sheets
+ */
+function getUnifiedFromPrefixSystem() {
+  var config = getVIPTabsConfig();
+  var prefixes = Object.keys(config).sort();
+  
+  if (prefixes.length === 0) {
+    return { error: 'No DASHBOARD sheet and no (PREFIX) sheets found' };
+  }
+  
+  var vocabulary = getVocabulary();
+  var managerResult = getManagerMapping();
+  var typesData = {};
+  var typeNames = [];
+  
+  prefixes.forEach(function(prefix) {
+    var group = config[prefix];
+    var groupId = group.id;
+    var displayName = group.displayName;
+    
+    var groupPlayers = [];
+    group.sheets.forEach(function(sheetInfo) {
+      var players = getVIPSheetData(sheetInfo.sheetObject);
+      players.forEach(function(p) {
+        p.vipType = sheetInfo.suffix;
+        p.sourceSheet = sheetInfo.fullName;
+      });
+      groupPlayers = groupPlayers.concat(players);
+    });
+    
+    // Split into vip/silentVip based on suffix
+    var vipP = [], silentP = [];
+    groupPlayers.forEach(function(p) {
+      if (String(p.vipType || '').toLowerCase().indexOf('silent') >= 0) silentP.push(p);
+      else vipP.push(p);
+    });
+    
+    var metrics = calculateVIPMetrics(vipP, silentP, vocabulary);
+    
+    typeNames.push(displayName);
+    typesData[displayName] = {
+      groupId: groupId,
+      displayName: displayName,
+      metrics: metrics,
+      vocabulary: vocabulary,
+      playerCounts: { vip: vipP.length, silentVip: silentP.length, total: groupPlayers.length },
+      allPlayers: { vip: vipP, silentVip: silentP }
+    };
+  });
+  
+  return {
+    source: 'PREFIX',
+    types: typeNames,
+    typesData: typesData,
+    vocabulary: vocabulary,
+    managerMapping: managerResult.tagToManager,
+    managers: Object.keys(managerResult.managerMapping).sort()
+  };
+}
+
+/**
+ * Detect player type from tags using TYPE sheet mapping
+ */
+function detectPlayerType(tags, tagToType) {
+  var result = { type: 'Other', subType: '' };
+  if (!tags || !Array.isArray(tags) || !tagToType) return result;
+  
+  for (var i = 0; i < tags.length; i++) {
+    var tag = String(tags[i]).toLowerCase().trim();
+    if (tagToType[tag]) {
+      return { type: tagToType[tag], subType: tagToType[tag] };
+    }
+  }
+  
+  return result;
 }
 
 /**
@@ -2382,49 +2608,34 @@ function getVIPGroupData(groupId) {
 function getVIPFilterOptions() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    
-    // Try dynamic system first
-    var groupData = getVIPGroupData('vip_dashboard');
-    
-    var vipPlayers = [];
-    var silentVipPlayers = [];
     var allPlayers = [];
     
-    if (groupData && !groupData.error && groupData.players) {
-      Logger.log('=== VIP Filter Options (Dynamic System) ===');
-      allPlayers = groupData.players;
-      
-      // Split by vipType
-      allPlayers.forEach(function(player) {
-        if (player.vipType === 'VIP') {
-          vipPlayers.push(player);
-        } else if (player.vipType === 'SILENT VIP') {
-          silentVipPlayers.push(player);
-        }
-      });
-      
+    // 1. Try DASHBOARD sheet first
+    var dashSheet = ss.getSheetByName('DASHBOARD');
+    if (dashSheet) {
+      Logger.log('=== VIP Filter Options (DASHBOARD sheet) ===');
+      allPlayers = getVIPSheetData(dashSheet);
     } else {
-      // Fallback to legacy system
-      Logger.log('=== VIP Filter Options (Legacy System) ===');
-      var vipSheet = ss.getSheetByName('VIP');
-      var silentVipSheet = ss.getSheetByName('SILENT VIP');
-      
-      if (!vipSheet || !silentVipSheet) {
-        return { error: 'VIP sheets not found' };
+      // 2. Try dynamic prefix system
+      var groupData = getVIPGroupData('vip_dashboard');
+      if (groupData && !groupData.error && groupData.players) {
+        Logger.log('=== VIP Filter Options (Dynamic System) ===');
+        allPlayers = groupData.players;
+      } else {
+        // 3. Legacy system
+        Logger.log('=== VIP Filter Options (Legacy System) ===');
+        var vipSheet = ss.getSheetByName('VIP');
+        var silentVipSheet = ss.getSheetByName('SILENT VIP');
+        if (vipSheet) allPlayers = allPlayers.concat(getVIPSheetData(vipSheet));
+        if (silentVipSheet) allPlayers = allPlayers.concat(getVIPSheetData(silentVipSheet));
       }
-      
-      vipPlayers = getVIPSheetData(vipSheet);
-      silentVipPlayers = getVIPSheetData(silentVipSheet);
-      allPlayers = vipPlayers.concat(silentVipPlayers);
     }
     
-    Logger.log('=== VIP Filter Options Debug ===');
-    Logger.log('VIP sheet players: ' + vipPlayers.length);
-    Logger.log('SILENT VIP sheet players: ' + silentVipPlayers.length);
-    Logger.log('Total players: ' + allPlayers.length);
+    Logger.log('Total players for filters: ' + allPlayers.length);
     
-    // Get mappings from TAGS and General Info
-    var managerMapping = getManagerMapping();
+    // Get mappings from MANAGER sheet and General Info
+    var managerResult = getManagerMapping();
+    var managerMapping = managerResult.tagToManager || {}; // ✅ flat {tag: manager}
     var trafficMapping = getTrafficTypeMapping();
     
     Logger.log('Manager mapping size: ' + Object.keys(managerMapping).length);
@@ -2432,117 +2643,47 @@ function getVIPFilterOptions() {
     
     var managers = {};
     var trafficTypes = {};
-    
-    // Sample first 3 players to see their tags
-    Logger.log('Sample player tags (first 3 VIP):');
-    for (var i = 0; i < Math.min(3, vipPlayers.length); i++) {
-      var p = vipPlayers[i];
-      Logger.log('VIP Player ' + (p.id || i) + ' tags: ' + JSON.stringify(p.tags) + ' (type: ' + typeof p.tags + ', isArray: ' + Array.isArray(p.tags) + ')');
-    }
-    
-    Logger.log('Sample player tags (first 3 SILENT VIP):');
-    for (var i = 0; i < Math.min(3, silentVipPlayers.length); i++) {
-      var p = silentVipPlayers[i];
-      Logger.log('SILENT VIP Player ' + (p.id || i) + ' tags: ' + JSON.stringify(p.tags) + ' (type: ' + typeof p.tags + ', isArray: ' + Array.isArray(p.tags) + ')');
-    }
-    
-    var playersWithTags = 0;
     var playersWithManagers = 0;
-    var vipWithManagers = 0;
-    var silentWithManagers = 0;
     
     // Helper: Get player's manager from tags with priority
-    // Priority: longer/more specific tags first (e.g. "verified" over "ann")
     function getPlayerManager(tags, mapping) {
       if (!tags || !Array.isArray(tags)) return null;
-      
       var matches = [];
       for (var i = 0; i < tags.length; i++) {
         var tag = String(tags[i]).trim();
         if (mapping[tag]) {
-          matches.push({
-            tag: tag,
-            manager: mapping[tag],
-            priority: tag.length  // Longer tags = more specific = higher priority
-          });
+          matches.push({ tag: tag, manager: mapping[tag], priority: tag.length });
         }
       }
-      
       if (matches.length === 0) return null;
-      
-      // Sort by priority (longer tags first)
       matches.sort(function(a, b) { return b.priority - a.priority; });
-      
-      return {
-        manager: matches[0].manager,
-        tag: matches[0].tag,
-        allMatches: matches
-      };
+      return { manager: matches[0].manager, tag: matches[0].tag };
     }
     
-    // Process VIP players
-    vipPlayers.forEach(function(player) {
+    // Process all players
+    allPlayers.forEach(function(player) {
       if (player.tags && Array.isArray(player.tags)) {
-        playersWithTags++;
         var result = getPlayerManager(player.tags, managerMapping);
         if (result) {
           managers[result.manager] = true;
           playersWithManagers++;
-          vipWithManagers++;
-          Logger.log('VIP Player ' + player.id + ' matched tag "' + result.tag + '" → manager "' + result.manager + '"' +
-                    (result.allMatches.length > 1 ? ' (had ' + result.allMatches.length + ' matches, picked most specific)' : ''));
-        } else {
-          Logger.log('VIP Player ' + player.id + ' has tags ' + JSON.stringify(player.tags) + ' but NO manager found');
         }
       }
-      
       if (player.stag) {
         var stagPrefix = getStagPrefix(player.stag);
         if (stagPrefix && trafficMapping[stagPrefix]) {
-          var trafficType = trafficMapping[stagPrefix];
-          trafficTypes[trafficType] = true;
+          trafficTypes[trafficMapping[stagPrefix]] = true;
         }
       }
     });
     
-    // Process SILENT VIP players
-    silentVipPlayers.forEach(function(player) {
-      if (player.tags && Array.isArray(player.tags)) {
-        playersWithTags++;
-        var result = getPlayerManager(player.tags, managerMapping);
-        if (result) {
-          managers[result.manager] = true;
-          playersWithManagers++;
-          silentWithManagers++;
-          Logger.log('SILENT Player ' + player.id + ' matched tag "' + result.tag + '" → manager "' + result.manager + '"' +
-                    (result.allMatches.length > 1 ? ' (had ' + result.allMatches.length + ' matches, picked most specific)' : ''));
-        } else {
-          Logger.log('SILENT Player ' + player.id + ' has tags ' + JSON.stringify(player.tags) + ' but NO manager found');
-        }
-      }
-      
-      if (player.stag) {
-        var stagPrefix = getStagPrefix(player.stag);
-        if (stagPrefix && trafficMapping[stagPrefix]) {
-          var trafficType = trafficMapping[stagPrefix];
-          trafficTypes[trafficType] = true;
-        }
-      }
-    });
-    
-    Logger.log('Players with tags array: ' + playersWithTags + ' / ' + allPlayers.length);
-    Logger.log('Players with manager tags: ' + playersWithManagers + ' (VIP: ' + vipWithManagers + ', Silent: ' + silentWithManagers + ')');
+    Logger.log('Players with managers: ' + playersWithManagers + ' / ' + allPlayers.length);
     
     var managersList = Object.keys(managers).sort();
     var trafficTypesList = Object.keys(trafficTypes).sort();
     
-    Logger.log('=== FINAL RESULTS ===');
-    Logger.log('Managers found (' + managersList.length + '): ' + managersList.join(', '));
-    Logger.log('Manager details:');
-    managersList.forEach(function(m) {
-      Logger.log('  Manager "' + m + '" exists in final list');
-    });
-    Logger.log('Traffic types found (' + trafficTypesList.length + '): ' + trafficTypesList.join(', '));
+    Logger.log('Managers: ' + managersList.join(', '));
+    Logger.log('Traffic types: ' + trafficTypesList.join(', '));
     
     return {
       managers: managersList,
@@ -2562,8 +2703,8 @@ function getVIPFilterOptions() {
 function createExportSheet(sheetName, data) {
   try {
     // Create new spreadsheet
-    const ss = SpreadsheetApp.create(sheetName + ' - Export');
-    const sheet = ss.getActiveSheet();
+    var ss = SpreadsheetApp.create(sheetName + ' - Export');
+    var sheet = ss.getActiveSheet();
     sheet.setName('Data');
     
     // Write data
@@ -2571,14 +2712,14 @@ function createExportSheet(sheetName, data) {
       sheet.getRange(1, 1, data.length, data[0].length).setValues(data);
       
       // Format header row
-      const headerRange = sheet.getRange(1, 1, 1, data[0].length);
+      var headerRange = sheet.getRange(1, 1, 1, data[0].length);
       headerRange.setBackground('#667eea');
       headerRange.setFontColor('#ffffff');
       headerRange.setFontWeight('bold');
       headerRange.setHorizontalAlignment('center');
       
       // Auto-resize columns
-      for (let i = 1; i <= data[0].length; i++) {
+      for (var i = 1; i <= data[0].length; i++) {
         sheet.autoResizeColumn(i);
       }
       
@@ -2603,86 +2744,1495 @@ function createExportSheet(sheetName, data) {
  * PLAYER PROFILING - ДОДАНО
  *************************************************/
 function getPlayerProfilingData() {
-  var output = { managers: [], fieldConfig: {}, success: false, error: null };
+  var output = { players: [], fieldConfig: {}, managerMapping: {}, success: false, error: null };
   
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var allSheets = ss.getSheets();
     
-    for (var i = 0; i < allSheets.length; i++) {
-      var sheet = allSheets[i];
-      var sheetName = sheet.getName();
-      
-      if (sheetName.indexOf('[PROFILING]') !== 0) continue;
-      
-      var managerName = sheetName.replace('[PROFILING]', '').trim();
-      var allData = sheet.getDataRange().getValues();
-      
-      if (allData.length < 2) {
-        output.managers.push({ name: managerName, players: [] });
-        continue;
-      }
-      
-      var headerRow = allData[0];
-      var emailColumnIndex = -1;
-      var tagsColumnIndex = -1;
-      
-      for (var h = 0; h < headerRow.length; h++) {
-        var headerText = String(headerRow[h] || '').toLowerCase().trim();
-        if (headerText.indexOf('email') !== -1 && emailColumnIndex === -1) emailColumnIndex = h;
-        if (headerText === 'tags' || headerText === 'tag') tagsColumnIndex = h;
-      }
-      
-      if (emailColumnIndex === -1) {
-        output.managers.push({ name: managerName, players: [] });
-        continue;
-      }
-      
-      var playersList = [];
-      
-      for (var r = 1; r < allData.length; r++) {
-        var rowData = allData[r];
-        var playerEmail = String(rowData[emailColumnIndex] || '').trim();
-        if (!playerEmail) continue;
-        
-        var playerObject = { email: playerEmail };
-        
-        for (var c = 0; c < headerRow.length; c++) {
-          var fieldName = String(headerRow[c] || '').trim();
-          if (!fieldName) continue;
-          
-          var cellValue = rowData[c];
-          
-          if (c === tagsColumnIndex && cellValue) {
-            try {
-              if (typeof cellValue === 'string') {
-                var trimmed = cellValue.trim();
-                if (trimmed.charAt(0) === '[') {
-                  cellValue = JSON.parse(trimmed);
-                } else if (trimmed.length > 0) {
-                  cellValue = [trimmed];
-                } else {
-                  cellValue = [];
-                }
-              } else if (!Array.isArray(cellValue)) {
-                cellValue = [];
-              }
-            } catch (e) { cellValue = []; }
-          }
-          
-          playerObject[fieldName] = cellValue;
-        }
-        
-        playersList.push(playerObject);
-      }
-      
-      output.managers.push({ name: managerName, players: playersList });
+    Logger.log('=== getPlayerProfilingData START ===');
+    
+    // ✅ Read single PROFILING sheet
+    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    
+    if (!sheet) {
+      Logger.log('ERROR: PROFILING sheet not found');
+      output.error = 'PROFILING sheet not found';
+      return output;
     }
     
+    var allData = sheet.getDataRange().getValues();
+    
+    if (allData.length < 2) {
+      output.success = true;
+      Logger.log('PROFILING sheet is empty');
+      return output;
+    }
+    
+    var headerRow = allData[0];
+    var emailColumnIndex = -1;
+    var tagsColumnIndex = -1;
+    
+    for (var h = 0; h < headerRow.length; h++) {
+      var headerText = String(headerRow[h] || '').toLowerCase().trim();
+      if (headerText.indexOf('email') !== -1 && emailColumnIndex === -1) emailColumnIndex = h;
+      if (headerText === 'tags' || headerText === 'tag') tagsColumnIndex = h;
+    }
+    
+    if (emailColumnIndex === -1) {
+      Logger.log('WARNING: No email column in PROFILING sheet');
+      output.error = 'No email column found';
+      return output;
+    }
+    
+    // Read all players
+    for (var r = 1; r < allData.length; r++) {
+      var rowData = allData[r];
+      var playerEmail = String(rowData[emailColumnIndex] || '').trim();
+      if (!playerEmail) continue;
+      
+      var playerObject = { email: playerEmail, _rowIndex: r + 1 }; // r+1 = 1-based sheet row
+      
+      for (var c = 0; c < headerRow.length; c++) {
+        var fieldName = String(headerRow[c] || '').trim();
+        if (!fieldName) continue;
+        
+        var cellValue = rowData[c];
+        
+        // Sanitize Date objects
+        if (Object.prototype.toString.call(cellValue) === '[object Date]') {
+          cellValue = isNaN(cellValue.getTime()) ? '' : Utilities.formatDate(cellValue, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+        }
+        
+        // Parse tags column
+        if (c === tagsColumnIndex && cellValue) {
+          try {
+            if (typeof cellValue === 'string') {
+              var trimmed = cellValue.trim();
+              if (trimmed.charAt(0) === '[') {
+                cellValue = JSON.parse(trimmed);
+              } else if (trimmed.length > 0) {
+                cellValue = [trimmed];
+              } else {
+                cellValue = [];
+              }
+            } else if (!Array.isArray(cellValue)) {
+              cellValue = [];
+            }
+          } catch (e) { cellValue = []; }
+        }
+        
+        // Ensure serializable
+        if (cellValue !== null && cellValue !== undefined 
+            && typeof cellValue !== 'string' 
+            && typeof cellValue !== 'number' 
+            && typeof cellValue !== 'boolean'
+            && !Array.isArray(cellValue)) {
+          cellValue = String(cellValue);
+        }
+        
+        playerObject[fieldName] = (cellValue === undefined) ? '' : cellValue;
+      }
+      
+      output.players.push(playerObject);
+    }
+    
+    Logger.log('PROFILING: ' + output.players.length + ' players loaded');
+    
+    // ✅ Load MANAGER mapping
+    var mgrResult = getManagerMapping();
+    output.managerMapping = mgrResult;
+    
+    // ✅ Load ATTENTION rules
+    output.attentionRules = getAttentionRules();
+    
     output.success = true;
+    
+    // ✅ BUILD fieldConfig from headers
+    if (output.players.length > 0) {
+      var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+      var sections = {};
+      var order = [];
+      var allPlayers = output.players;
+      
+      // Read Data Validation for dropdown detection
+      var dataValidations = null;
+      try {
+        if (sheet.getLastRow() >= 2) {
+          dataValidations = sheet.getRange(2, 1, 1, sheet.getLastColumn()).getDataValidations()[0];
+        }
+      } catch(dvErr) {
+        Logger.log('Warning: Could not read data validations: ' + dvErr);
+      }
+      
+      for (var hi = 0; hi < headers.length; hi++) {
+        var rawHeader = String(headers[hi] || '').trim();
+        if (!rawHeader) continue;
+        
+        var lowerHeader = rawHeader.toLowerCase();
+        if (lowerHeader === 'tags' || lowerHeader === 'tag') continue;
+        
+        var isPreview = rawHeader.charAt(0) === '*';
+        var isPrevColumn = rawHeader.indexOf('[PREV]') !== -1;
+        var cleanHeader = rawHeader;
+        if (isPreview) cleanHeader = cleanHeader.substring(1).trim();
+        if (isPrevColumn) cleanHeader = cleanHeader.replace(/\[PREV\]/gi, '').trim();
+        
+        var sectionName = 'General';
+        var sectionMatch = cleanHeader.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
+        if (sectionMatch) {
+          cleanHeader = sectionMatch[1].trim();
+          sectionName = sectionMatch[2].trim();
+        }
+        
+        var fieldType = 'text';
+        var fieldOptions = null;
+        
+        if (lowerHeader.indexOf('birthday') !== -1 || lowerHeader.indexOf('dob') !== -1 || lowerHeader.indexOf('birth date') !== -1 || lowerHeader.indexOf('date') !== -1) {
+          fieldType = 'date';
+        }
+        
+        // Method 1: Google Sheets Data Validation
+        if (dataValidations && dataValidations[hi]) {
+          var dv = dataValidations[hi];
+          var criteriaType = dv.getCriteriaType();
+          if (criteriaType === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+            var args = dv.getCriteriaValues();
+            if (args && args[0] && Array.isArray(args[0]) && args[0].length > 0) {
+              fieldType = 'dropdown';
+              fieldOptions = args[0].map(function(v) { return String(v); });
+            }
+          } else if (criteriaType === SpreadsheetApp.DataValidationCriteria.VALUE_IN_RANGE) {
+            try {
+              var args = dv.getCriteriaValues();
+              if (args && args[0]) {
+                var rangeValues = args[0].getValues();
+                fieldOptions = [];
+                for (var rv = 0; rv < rangeValues.length; rv++) {
+                  var val = String(rangeValues[rv][0] || '').trim();
+                  if (val) fieldOptions.push(val);
+                }
+                if (fieldOptions.length > 0) fieldType = 'dropdown';
+              }
+            } catch(rangeErr) {}
+          }
+        }
+        
+        // Method 2: Fallback - analyze column values
+        if (fieldType === 'text') {
+          var skipDropdown = lowerHeader.indexOf('email') !== -1 
+            || lowerHeader.indexOf('comment') !== -1 
+            || lowerHeader.indexOf('photo') !== -1
+            || lowerHeader.indexOf('upload') !== -1
+            || lowerHeader.indexOf('[icon]') !== -1
+            || lowerHeader.indexOf('[bicon]') !== -1
+            || lowerHeader.indexOf('link') !== -1
+            || lowerHeader.indexOf('url') !== -1
+            || lowerHeader.indexOf('note') !== -1
+            || lowerHeader.indexOf('name') !== -1
+            || lowerHeader.indexOf('id') !== -1
+            || fieldType === 'date';
+          
+          if (!skipDropdown && allPlayers.length > 3) {
+            var uniqueVals = {};
+            var nonEmptyCount = 0;
+            for (var pi = 0; pi < allPlayers.length; pi++) {
+              var val = allPlayers[pi][rawHeader];
+              if (val !== null && val !== undefined && String(val).trim() !== '') {
+                nonEmptyCount++;
+                var strVal = String(val).trim();
+                if (strVal.length <= 50) uniqueVals[strVal] = (uniqueVals[strVal] || 0) + 1;
+              }
+            }
+            var uniqueCount = Object.keys(uniqueVals).length;
+            if (uniqueCount >= 2 && uniqueCount <= 20 && nonEmptyCount > uniqueCount) {
+              fieldType = 'dropdown';
+              fieldOptions = Object.keys(uniqueVals).sort();
+            }
+          }
+        }
+        
+        var fieldKey = rawHeader;
+        output.fieldConfig[fieldKey] = {
+          label: cleanHeader,
+          type: fieldType,
+          section: sectionName,
+          preview: isPrevColumn,
+          starred: isPreview
+        };
+        if (fieldOptions) output.fieldConfig[fieldKey].options = fieldOptions;
+        
+        order.push(fieldKey);
+        if (!sections[sectionName]) sections[sectionName] = [];
+        sections[sectionName].push(fieldKey);
+      }
+      
+      output.fieldConfig._order = order;
+      output.fieldConfig._sections = sections;
+      
+      Logger.log('fieldConfig built: ' + order.length + ' fields, ' + Object.keys(sections).length + ' sections');
+    }
+    
+    Logger.log('=== getPlayerProfilingData END: ' + output.players.length + ' players ===');
   } catch (mainError) {
+    Logger.log('ERROR in getPlayerProfilingData: ' + mainError.toString());
+    Logger.log('Stack: ' + (mainError.stack || 'no stack'));
     output.error = mainError.toString();
   }
   
   return output;
+}
+
+/**
+ * Update player data in PROFILING sheet
+ */
+function updatePlayerProfiling(data) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheetName = data.sheetName || 'PROFILING';
+  var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName('[PROFILING]');
+  
+  if (!sheet) throw new Error('Sheet "' + sheetName + '" not found');
+  
+  var rowIndex = data.rowIndex;
+  if (!rowIndex || rowIndex < 2) throw new Error('Invalid row index: ' + rowIndex);
+  
+  var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+  
+  Logger.log('updatePlayerProfiling: row=' + rowIndex + ', sheet=' + sheetName);
+  
+  for (var c = 0; c < headers.length; c++) {
+    var headerRaw = String(headers[c] || '').trim();
+    if (!headerRaw) continue;
+    
+    var headerLower = headerRaw.toLowerCase();
+    if (headerLower === 'tags' || headerLower === 'tag') continue; // Don't overwrite tags
+    
+    // Try exact match first, then case-insensitive
+    var value = undefined;
+    if (data.hasOwnProperty(headerRaw)) {
+      value = data[headerRaw];
+    } else {
+      // Try matching by original keys (case-insensitive)
+      var dataKeys = Object.keys(data);
+      for (var k = 0; k < dataKeys.length; k++) {
+        if (dataKeys[k].toLowerCase().trim() === headerLower) {
+          value = data[dataKeys[k]];
+          break;
+        }
+      }
+    }
+    
+    if (value !== undefined && value !== null) {
+      sheet.getRange(rowIndex, c + 1).setValue(value);
+    }
+  }
+  
+  Logger.log('✅ Player updated at row ' + rowIndex);
+  return { success: true, row: rowIndex };
+}
+
+/**
+ * Delete player from PROFILING sheet by email
+ */
+function deletePlayer(playerEmail) {
+  if (!playerEmail) throw new Error('No email provided');
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+  
+  if (!sheet) throw new Error('PROFILING sheet not found');
+  
+  var allData = sheet.getDataRange().getValues();
+  var headers = allData[0];
+  
+  // Find email column
+  var emailCol = -1;
+  for (var h = 0; h < headers.length; h++) {
+    if (String(headers[h] || '').toLowerCase().trim().indexOf('email') !== -1) {
+      emailCol = h;
+      break;
+    }
+  }
+  
+  if (emailCol === -1) throw new Error('Email column not found');
+  
+  // Find player row (search from bottom to avoid index shift issues)
+  var targetEmail = playerEmail.toLowerCase().trim();
+  for (var r = allData.length - 1; r >= 1; r--) {
+    var cellEmail = String(allData[r][emailCol] || '').toLowerCase().trim();
+    if (cellEmail === targetEmail) {
+      sheet.deleteRow(r + 1); // +1 because getValues is 0-based, deleteRow is 1-based
+      Logger.log('✅ Deleted player "' + playerEmail + '" from row ' + (r + 1));
+      return { success: true, email: playerEmail, row: r + 1 };
+    }
+  }
+  
+  throw new Error('Player "' + playerEmail + '" not found in PROFILING sheet');
+}
+
+/**
+ * Read ATTENTION sheet — returns rules with tags, message, and color
+ */
+function getAttentionRules() {
+  var rules = [];
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ATTENTION');
+    if (!sheet) { Logger.log('ATTENTION sheet not found'); return rules; }
+    
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 3) return rules;
+    
+    var data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+    var headers = data[0].map(function(h) { return String(h || '').toLowerCase().trim(); });
+    
+    var errorCol = headers.indexOf('error');
+    var tagsCol = headers.indexOf('tags');
+    var msgCol = headers.indexOf('message');
+    
+    if (errorCol === -1 || tagsCol === -1 || msgCol === -1) {
+      Logger.log('ATTENTION: Missing required columns (error/tags/message)');
+      return rules;
+    }
+    
+    // Get background colors for ERROR column
+    var bgColors = sheet.getRange(2, errorCol + 1, lastRow - 1, 1).getBackgrounds();
+    
+    for (var r = 1; r < data.length; r++) {
+      var errorName = String(data[r][errorCol] || '').trim();
+      var tagsRaw = String(data[r][tagsCol] || '').trim();
+      var message = String(data[r][msgCol] || '').trim();
+      
+      if (!errorName || !message) continue;
+      
+      // Parse tags
+      var tags = [];
+      try {
+        if (tagsRaw.charAt(0) === '[') {
+          tags = JSON.parse(tagsRaw);
+        } else if (tagsRaw) {
+          tags = tagsRaw.split(',').map(function(t) { return t.trim(); });
+        }
+      } catch(e) { tags = [tagsRaw]; }
+      
+      // Get bg color (hex)
+      var bgColor = bgColors[r - 1] ? bgColors[r - 1][0] : '#ef4444';
+      if (bgColor === '#ffffff' || bgColor === '#fff') bgColor = '#ef4444'; // default red if white
+      
+      rules.push({
+        error: errorName,
+        tags: tags.map(function(t) { return String(t).toLowerCase().trim(); }),
+        message: message,
+        color: bgColor
+      });
+    }
+    
+    Logger.log('ATTENTION: loaded ' + rules.length + ' rules');
+  } catch(e) {
+    Logger.log('ATTENTION error: ' + e.toString());
+  }
+  return rules;
+}
+
+/**
+ * Export profiling data to a new Google Spreadsheet
+ */
+function exportProfilingToSheet(headers, rows) {
+  var timestamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+  var ss = SpreadsheetApp.create('Profiling Export - ' + timestamp);
+  var sheet = ss.getActiveSheet();
+  sheet.setName('Players');
+  
+  // Write headers
+  if (headers && headers.length > 0) {
+    var headerRange = sheet.getRange(1, 1, 1, headers.length);
+    headerRange.setValues([headers]);
+    headerRange.setFontWeight('bold');
+    headerRange.setBackground('#667eea');
+    headerRange.setFontColor('#ffffff');
+  }
+  
+  // Write data
+  if (rows && rows.length > 0) {
+    var dataRange = sheet.getRange(2, 1, rows.length, headers.length);
+    dataRange.setValues(rows);
+  }
+  
+  // Auto-resize columns
+  for (var i = 1; i <= headers.length; i++) {
+    sheet.autoResizeColumn(i);
+  }
+  
+  // Add filters
+  if (rows.length > 0) {
+    sheet.getRange(1, 1, rows.length + 1, headers.length).createFilter();
+  }
+  
+  // Freeze header row
+  sheet.setFrozenRows(1);
+  
+  return { url: ss.getUrl(), id: ss.getId() };
+}
+
+/******************** BONUS CALCULATOR BACKEND ********************/
+
+var KB = {
+  RTP_SHEET: 'RTP GAMES',
+  HEADER_ROW: 1,
+  DATA_ROW: 2,
+  CASINO_PREFIX: '[C]',
+  SPORT_PREFIX: '[S]'
+};
+
+function parseRTP(val) {
+  if (val === null || val === undefined || val === '') return null;
+  var str = String(val).replace(/[^\d\.]/g, '');
+  var num = parseFloat(str);
+  return !isNaN(num) ? num : null;
+}
+
+function colToA1(col) {
+  var s = '';
+  for (var c = col; c > 0;) {
+    var m = (c - 1) % 26;
+    s = String.fromCharCode(65 + m) + s;
+    c = Math.floor((c - 1) / 26);
+  }
+  return s;
+}
+
+function parseSheetInfo(sheetName) {
+  var category = null;
+  var cleanName = sheetName;
+  var fbGroup = null;
+  var fbVariant = null;
+  
+  if (sheetName.indexOf(KB.CASINO_PREFIX) === 0) {
+    category = 'casino';
+    cleanName = sheetName.substring(KB.CASINO_PREFIX.length).trim();
+  } else if (sheetName.indexOf(KB.SPORT_PREFIX) === 0) {
+    category = 'sport';
+    cleanName = sheetName.substring(KB.SPORT_PREFIX.length).trim();
+  }
+  
+  var fbMatch = cleanName.match(/^(.+?)\s*\*(.+)$/);
+  if (fbMatch) {
+    fbVariant = fbMatch[1].trim();
+    fbGroup = fbMatch[2].trim();
+  }
+  
+  return { category: category, cleanName: cleanName, originalName: sheetName, fbGroup: fbGroup, fbVariant: fbVariant };
+}
+
+function getConfig() {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var all = ss.getSheets();
+    
+    var casino = [];
+    var sport = [];
+    var fbGroups = {};
+    var sheetsToLoad = [];
+    
+    for (var i = 0; i < all.length; i++) {
+      var name = all[i].getName();
+      if (name === KB.RTP_SHEET) continue;
+      
+      var info = parseSheetInfo(name);
+      if (!info.category) continue;
+      
+      var calc = {
+        sheet: info.originalName,
+        displayName: info.cleanName,
+        category: info.category,
+        isFS: /FS/i.test(info.cleanName),
+        isLootbox: /lootbox/i.test(info.cleanName),
+        fbGroup: info.fbGroup,
+        fbVariant: info.fbVariant
+      };
+      
+      sheetsToLoad.push(info.originalName);
+      
+      if (info.fbGroup && info.fbVariant) {
+        var key = info.category + '_' + info.fbGroup;
+        if (!fbGroups[key]) {
+          fbGroups[key] = {
+            displayName: info.fbGroup,
+            category: info.category,
+            isFB: true,
+            isLootbox: /lootbox/i.test(info.fbGroup),
+            variants: []
+          };
+        }
+        fbGroups[key].variants.push(calc);
+      } else {
+        if (info.category === 'casino') casino.push(calc);
+        else sport.push(calc);
+      }
+    }
+    
+    var fbKeys = Object.keys(fbGroups);
+    for (var f = 0; f < fbKeys.length; f++) {
+      var g = fbGroups[fbKeys[f]];
+      if (g.category === 'casino') casino.push(g);
+      else sport.push(g);
+    }
+    
+    var allFields = getAllFields(sheetsToLoad);
+    
+    var allCalcs = casino.concat(sport);
+    for (var c = 0; c < allCalcs.length; c++) {
+      if (allCalcs[c].isFB) {
+        for (var v = 0; v < allCalcs[c].variants.length; v++) {
+          allCalcs[c].variants[v].fields = allFields[allCalcs[c].variants[v].sheet] || [];
+        }
+      } else {
+        allCalcs[c].fields = allFields[allCalcs[c].sheet] || [];
+      }
+    }
+    
+    var rtpGames = getRTPGames();
+    
+    return { casino: casino, sport: sport, rtpGames: rtpGames };
+  } catch (e) {
+    Logger.log('Config error: ' + e.message);
+    return { casino: [], sport: [], rtpGames: [] };
+  }
+}
+
+function getAllFields(sheetNames) {
+  var results = {};
+  for (var i = 0; i < sheetNames.length; i++) {
+    results[sheetNames[i]] = getFields(sheetNames[i]);
+  }
+  return results;
+}
+
+function getFields(sheetName) {
+  var userCache = CacheService.getUserCache();
+  var cacheKey = 'fields_' + sheetName;
+  var cached = userCache.get(cacheKey);
+  if (cached) {
+    try { return JSON.parse(cached); } catch (e) {}
+  }
+  
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sh = ss.getSheetByName(sheetName);
+    if (!sh) return [];
+    
+    var isLootbox = /lootbox/i.test(sheetName);
+    
+    if (isLootbox) {
+      var lastRow = Math.min(sh.getLastRow(), 50);
+      var dataRange = sh.getRange(1, 1, lastRow, 11);
+      var values = dataRange.getValues();
+      var backgrounds = dataRange.getBackgrounds();
+      var fontWeights = dataRange.getFontWeights();
+      var formulas = dataRange.getFormulas();
+      
+      var fields = [];
+      for (var i = 0; i < values.length; i++) {
+        var lbl = String(values[i][0] || '').trim();
+        if (!lbl) continue;
+        var rowNum = i + 1;
+        fields.push({
+          label: lbl,
+          a1: 'A' + rowNum,
+          row: rowNum,
+          col: 1,
+          hasFormula: !!(formulas[i][1] && formulas[i][1].length > 0),
+          color: backgrounds[i][0] && backgrounds[i][0] !== '#ffffff' ? backgrounds[i][0] : null,
+          bold: fontWeights[i][0] === 'bold'
+        });
+      }
+      try { userCache.put(cacheKey, JSON.stringify(fields), 60); } catch (e) {}
+      return fields;
+    }
+    
+    var lastCol = sh.getLastColumn();
+    if (lastCol === 0) return [];
+    
+    var maxRows = Math.min(3, sh.getMaxRows());
+    var dataRange2 = sh.getRange(1, 1, maxRows, lastCol);
+    var values2 = dataRange2.getValues();
+    var backgrounds2 = dataRange2.getBackgrounds();
+    var fontWeights2 = dataRange2.getFontWeights();
+    var formulas2 = dataRange2.getFormulas();
+    var headerNotes = sh.getRange(1, 1, 1, lastCol).getNotes()[0];
+    
+    var labels = values2[0];
+    var dataValues = values2[1] || [];
+    var thresholds = values2[2] || [];
+    var bgColors = backgrounds2[0];
+    var rowBgColors = backgrounds2[1] || [];
+    var fWeights = fontWeights2[0];
+    var forms = formulas2[1] || [];
+    
+    var fields2 = [];
+    for (var j = 0; j < labels.length; j++) {
+      var lbl2 = String(labels[j] || '').trim();
+      if (!lbl2) continue;
+      fields2.push({
+        label: lbl2,
+        a1: colToA1(j + 1) + '2',
+        col: j + 1,
+        hasFormula: !!(forms[j] && forms[j].length),
+        value: dataValues[j],
+        threshold: thresholds[j] !== undefined && thresholds[j] !== '' ? Number(thresholds[j]) : null,
+        color: bgColors[j] && bgColors[j] !== '#ffffff' ? bgColors[j] : null,
+        bold: fWeights[j] === 'bold',
+        note: headerNotes[j] || '',
+        cellBgColor: rowBgColors[j] && rowBgColors[j] !== '#ffffff' ? rowBgColors[j] : null
+      });
+    }
+    try { userCache.put(cacheKey, JSON.stringify(fields2), 60); } catch (e) {}
+    return fields2;
+  } catch (e) {
+    Logger.log('getFields error: ' + e.message);
+    return [];
+  }
+}
+
+function getPlayerPreferences(email) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var prefSheet = ss.getSheetByName('preferences');
+    if (!prefSheet) return null;
+    
+    var data = prefSheet.getDataRange().getValues();
+    if (data.length <= 1) return null;
+    
+    var headers = data[0].map(function(h) { return String(h).toUpperCase().trim(); });
+    var emailIdx = headers.indexOf('EMAIL');
+    var gamesIdx = headers.indexOf('GAMES');
+    if (emailIdx === -1 || gamesIdx === -1) return null;
+    
+    var emailLower = String(email).toLowerCase().trim();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailIdx] || '').toLowerCase().trim() === emailLower) {
+        return { email: data[i][emailIdx], games: String(data[i][gamesIdx] || '').trim() };
+      }
+    }
+    return null;
+  } catch (e) {
+    Logger.log('Error loading player preferences: ' + e.message);
+    return null;
+  }
+}
+
+function clearCache() {
+  try {
+    CacheService.getUserCache().removeAll([]);
+    return { success: true };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+}
+
+function setZerosInSheet(sheetName, allInputFields) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { success: false, error: 'Sheet not found' };
+    if (!allInputFields || allInputFields.length === 0) return { success: false, error: 'No input fields' };
+    
+    for (var i = 0; i < allInputFields.length; i++) {
+      sheet.getRange(allInputFields[i]).setValue(0);
+    }
+    SpreadsheetApp.flush();
+    return { success: true };
+  } catch (e) {
+    Logger.log('Error setting zeros: ' + e.message);
+    return { success: false, error: e.message };
+  }
+}
+
+function getRTPGames() {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var rtpSheet = ss.getSheetByName(KB.RTP_SHEET);
+    if (!rtpSheet) return [];
+    
+    var data = rtpSheet.getDataRange().getValues();
+    if (data.length <= 1) return [];
+    
+    var headers = data[0].map(function(h) { return String(h).toUpperCase().trim(); });
+    var providerIdx = headers.indexOf('PROVIDER');
+    var slotIdx = headers.indexOf('SLOT');
+    var rtpIdx = headers.indexOf('RTP');
+    var volatilityIdx = headers.indexOf('VOLATILITY');
+    var categoryIdx = headers.indexOf('CATEGORY');
+    
+    if (providerIdx === -1 || slotIdx === -1 || rtpIdx === -1) return [];
+    
+    var betLvlIndices = [];
+    for (var h = 0; h < headers.length; h++) {
+      if (headers[h].indexOf('BET LVL') === 0) betLvlIndices.push(h);
+    }
+    
+    var games = [];
+    for (var i = 1; i < data.length; i++) {
+      var provider = data[i][providerIdx];
+      var slot = data[i][slotIdx];
+      var rtpRaw = data[i][rtpIdx];
+      if (!provider || !slot || rtpRaw === null || rtpRaw === undefined || rtpRaw === '') continue;
+      
+      var rtpValue = parseRTP(rtpRaw);
+      if (rtpValue === null) continue;
+      var rtpPct = rtpValue < 2 ? rtpValue * 100 : rtpValue;
+      var volatility = volatilityIdx !== -1 ? String(data[i][volatilityIdx] || '').trim() : '';
+      var category = categoryIdx !== -1 ? String(data[i][categoryIdx] || '').trim() : '';
+      
+      var betLevels = [];
+      for (var b = 0; b < betLvlIndices.length; b++) {
+        var betVal = data[i][betLvlIndices[b]];
+        if (betVal !== null && betVal !== undefined && betVal !== '') {
+          betLevels.push({ level: headers[betLvlIndices[b]].replace('BET LVL', '').trim(), value: Number(betVal) });
+        }
+      }
+      
+      games.push({
+        provider: String(provider).trim(),
+        slot: String(slot).trim(),
+        rtpPct: rtpPct.toFixed(2),
+        volatility: volatility,
+        category: category,
+        betLevels: betLevels
+      });
+    }
+    return games;
+  } catch (e) {
+    Logger.log('Error loading RTP games: ' + e.message);
+    return [];
+  }
+}
+
+function compute(sheetName, inputMap) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) throw new Error('Sheet not found');
+    
+    var keys = Object.keys(inputMap);
+    for (var k = 0; k < keys.length; k++) {
+      sheet.getRange(keys[k]).setValue(inputMap[keys[k]]);
+    }
+    SpreadsheetApp.flush();
+    
+    var lastCol = sheet.getLastColumn();
+    var labels = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var values = sheet.getRange(2, 1, 1, lastCol).getDisplayValues()[0];
+    var backgrounds = sheet.getRange(2, 1, 1, lastCol).getBackgrounds()[0];
+    var notes = sheet.getRange(1, 1, 1, lastCol).getNotes()[0];
+    
+    var result = [];
+    for (var i = 0; i < labels.length; i++) {
+      var lbl = String(labels[i] || '').trim();
+      if (lbl) {
+        result.push({
+          label: lbl,
+          a1: colToA1(i + 1) + '2',
+          value: values[i] || '',
+          cellBgColor: backgrounds[i] && backgrounds[i] !== '#ffffff' ? backgrounds[i] : null,
+          note: notes[i] || ''
+        });
+      }
+    }
+    return { sheet: sheetName, result: result };
+  } catch (e) {
+    throw new Error('Compute error: ' + e.message);
+  }
+}
+
+// ==================== RTP GAMES CRUD ====================
+
+function getRTPGamesFullData() {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(KB.RTP_SHEET);
+    if (!sheet) return { headers: [], games: [], headerRow: [] };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 1) return { headers: [], games: [], headerRow: [] };
+    
+    var headers = data[0].map(function(h) { return String(h).trim(); });
+    var games = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var row = {};
+      var hasData = false;
+      for (var j = 0; j < headers.length; j++) {
+        var val = data[i][j];
+        if (val !== null && val !== undefined && val !== '') hasData = true;
+        
+        // Format RTP as percentage string
+        var key = headers[j].toUpperCase();
+        if (key === 'RTP' && typeof val === 'number') {
+          row[headers[j]] = val < 2 ? (val * 100).toFixed(2) + '%' : val.toFixed(2) + '%';
+        } else {
+          row[headers[j]] = val !== null && val !== undefined ? String(val) : '';
+        }
+      }
+      if (hasData) {
+        row._row = i + 1; // 1-based sheet row
+        games.push(row);
+      }
+    }
+    
+    return { headers: headers, games: games };
+  } catch (e) {
+    throw new Error('getRTPGamesFullData: ' + e.message);
+  }
+}
+
+function saveRTPGame(rowNum, gameData) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(KB.RTP_SHEET);
+    if (!sheet) throw new Error('RTP GAMES sheet not found');
+    
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var headerMap = {};
+    for (var i = 0; i < headers.length; i++) {
+      headerMap[String(headers[i]).trim()] = i + 1; // 1-based column
+    }
+    
+    // If rowNum is 0 or null, append new row
+    if (!rowNum || rowNum === 0) {
+      rowNum = sheet.getLastRow() + 1;
+    }
+    
+    var keys = Object.keys(gameData);
+    for (var k = 0; k < keys.length; k++) {
+      var colNum = headerMap[keys[k]];
+      if (!colNum) continue;
+      
+      var val = gameData[keys[k]];
+      var headerKey = keys[k].toUpperCase();
+      
+      // Parse RTP: store as decimal (0.96)
+      if (headerKey === 'RTP') {
+        var rtpStr = String(val).replace('%', '').replace(',', '.').trim();
+        var rtpNum = parseFloat(rtpStr);
+        if (!isNaN(rtpNum)) {
+          val = rtpNum > 2 ? rtpNum / 100 : rtpNum;
+        }
+      }
+      // Parse BET LVL: store as number
+      else if (headerKey.indexOf('BET LVL') === 0) {
+        var betStr = String(val).replace(',', '.').trim();
+        var betNum = parseFloat(betStr);
+        val = isNaN(betNum) ? '' : betNum;
+      }
+      
+      sheet.getRange(rowNum, colNum).setValue(val);
+    }
+    
+    SpreadsheetApp.flush();
+    return { success: true, row: rowNum };
+  } catch (e) {
+    throw new Error('saveRTPGame: ' + e.message);
+  }
+}
+
+function deleteRTPGame(rowNum) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName(KB.RTP_SHEET);
+    if (!sheet) throw new Error('RTP GAMES sheet not found');
+    if (rowNum < 2) throw new Error('Cannot delete header row');
+    
+    sheet.deleteRow(rowNum);
+    SpreadsheetApp.flush();
+    return { success: true };
+  } catch (e) {
+    throw new Error('deleteRTPGame: ' + e.message);
+  }
+}
+
+// ==================== PLAYER FAVOURITE SLOTS ====================
+
+function getPlayerFavouriteSlots(email) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName('PLAYER PREFERENCE');
+    if (!sheet) return [];
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    
+    var headers = data[0].map(function(h) { return String(h).toUpperCase().trim(); });
+    var emailIdx = headers.indexOf('EMAIL');
+    if (emailIdx === -1) return [];
+    
+    var emailLower = String(email).toLowerCase().trim();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailIdx] || '').toLowerCase().trim() === emailLower) {
+        var slots = [];
+        for (var j = 1; j < data[i].length; j++) {
+          var val = String(data[i][j] || '').trim();
+          if (val) slots.push(val);
+        }
+        return slots;
+      }
+    }
+    return [];
+  } catch (e) {
+    Logger.log('getPlayerFavouriteSlots error: ' + e.message);
+    return [];
+  }
+}
+
+function savePlayerFavouriteSlots(email, slotsArr) {
+  try {
+    var ss = SpreadsheetApp.getActive();
+    var sheet = ss.getSheetByName('PLAYER PREFERENCE');
+    if (!sheet) {
+      sheet = ss.insertSheet('PLAYER PREFERENCE');
+      sheet.getRange(1, 1).setValue('EMAIL');
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0] || ['EMAIL'];
+    var emailLower = String(email).toLowerCase().trim();
+    var rowNum = 0;
+    
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').toLowerCase().trim() === emailLower) {
+        rowNum = i + 1;
+        break;
+      }
+    }
+    
+    if (rowNum === 0) {
+      rowNum = sheet.getLastRow() + 1;
+    }
+    
+    // Write email + all slots in columns A, B, C, D...
+    var rowData = [email];
+    for (var s = 0; s < slotsArr.length; s++) {
+      rowData.push(slotsArr[s]);
+    }
+    
+    // Ensure enough columns
+    var neededCols = rowData.length;
+    var currentCols = sheet.getMaxColumns();
+    if (neededCols > currentCols) {
+      sheet.insertColumnsAfter(currentCols, neededCols - currentCols);
+    }
+    
+    // Clear old data in that row first
+    if (currentCols > 0) {
+      sheet.getRange(rowNum, 1, 1, Math.max(currentCols, neededCols)).clearContent();
+    }
+    
+    // Write new data
+    sheet.getRange(rowNum, 1, 1, rowData.length).setValues([rowData]);
+    SpreadsheetApp.flush();
+    
+    return { success: true };
+  } catch (e) {
+    throw new Error('savePlayerFavouriteSlots: ' + e.message);
+  }
+}
+
+/**
+ * Get HOME sheet data. Auto-reads date/author from cell notes.
+ * Note format: "dd.MM.yyyy HH:mm|Author Name"  
+ * Returns newest posts first.
+ */
+function getHomeData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('HOME') || ss.getSheetByName('Home');
+    if (!sheet) return { error: 'HOME sheet not found' };
+    
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2 || lastCol < 1) return { news: [], blog: [], links: [] };
+    
+    var data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+    var allNotes = sheet.getRange(1, 1, lastRow, lastCol).getNotes();
+    var headers = data[0].map(function(h) { return String(h).trim().toUpperCase(); });
+    
+    var newsCol = headers.indexOf('NEWS');
+    var blogCol = headers.indexOf('BLOG');
+    var linksCol = headers.indexOf('USEFUL LINKS');
+    
+    function parsePosts(colIdx) {
+      if (colIdx < 0) return [];
+      var posts = [];
+      var seen = {};
+      for (var i = 1; i < data.length; i++) {
+        var val = String(data[i][colIdx] || '').trim();
+        if (!val) continue;
+        var hash = val.substring(0, 100);
+        if (seen[hash]) continue;
+        seen[hash] = true;
+        
+        var date = '';
+        var author = '';
+        var note = (allNotes[i] && allNotes[i][colIdx]) ? allNotes[i][colIdx].trim() : '';
+        if (note && note.indexOf('|') !== -1) {
+          var parts = note.split('|');
+          date = parts[0].trim();
+          author = parts.slice(1).join('|').trim();
+        } else if (note) {
+          date = note;
+        }
+        
+        posts.push({ content: val, date: date, author: author, row: i + 1 });
+      }
+      posts.reverse();
+      return posts;
+    }
+    
+    function parseLinks(colIdx) {
+      if (colIdx < 0) return [];
+      var links = [];
+      for (var i = 1; i < data.length; i++) {
+        var val = String(data[i][colIdx] || '').trim();
+        if (!val) continue;
+        var url = '';
+        try {
+          var richText = sheet.getRange(i + 1, colIdx + 1).getRichTextValue();
+          if (richText) {
+            var runs = richText.getRuns();
+            for (var r = 0; r < runs.length; r++) {
+              var linkUrl = runs[r].getLinkUrl();
+              if (linkUrl) { url = linkUrl; break; }
+            }
+          }
+        } catch(e) {}
+        if (!url && val.match(/^https?:\/\//)) url = val;
+        links.push({ label: val, url: url, row: i + 1 });
+      }
+      return links;
+    }
+    
+    return {
+      news: parsePosts(newsCol),
+      blog: parsePosts(blogCol),
+      links: parseLinks(linksCol)
+    };
+  } catch (e) {
+    Logger.log('getHomeData error: ' + e);
+    return { error: e.message };
+  }
+}
+
+/**
+ * Auto-stamp date & author on HOME sheet edits.
+ * Stores as cell note: "dd.MM.yyyy HH:mm|Author Name"
+ * INSTALLABLE trigger - run setupHomeTrigger() once.
+ */
+function onHomeEdit(e) {
+  try {
+    if (!e || !e.range) return;
+    var sheet = e.range.getSheet();
+    if (sheet.getName().toUpperCase() !== 'HOME') return;
+    
+    var col = e.range.getColumn();
+    var row = e.range.getRow();
+    if (row <= 1) return;
+    
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var colName = String(headers[col - 1] || '').trim().toUpperCase();
+    if (colName !== 'NEWS' && colName !== 'BLOG') return;
+    
+    var cellValue = String(e.range.getValue() || '').trim();
+    if (!cellValue) { e.range.setNote(''); return; }
+    
+    var authorName = getCurrentAuthorName();
+    var now = Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM.yyyy HH:mm');
+    
+    var existing = e.range.getNote();
+    if (!existing) {
+      e.range.setNote(now + '|' + authorName);
+    }
+  } catch(err) {
+    Logger.log('onHomeEdit error: ' + err);
+  }
+}
+
+function emailToName(email) {
+  if (!email) return '';
+  var name = email.split('@')[0];
+  return name.replace(/[._-]/g, ' ').replace(/\b\w/g, function(c) { return c.toUpperCase(); });
+}
+
+/**
+ * Get current user name - tries multiple methods
+ */
+function getCurrentAuthorName() {
+  var email = '';
+  try { email = Session.getActiveUser().getEmail(); } catch(e) {}
+  if (!email) try { email = Session.getEffectiveUser().getEmail(); } catch(e) {}
+  if (email) return emailToName(email);
+  
+  // Fallback: try Drive owner
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var owner = ss.getOwner();
+    if (owner) return owner.getName() || emailToName(owner.getEmail());
+  } catch(e) {}
+  
+  return 'Admin';
+}
+
+/** Run ONCE to install the auto-stamp trigger */
+function setupHomeTrigger() {
+  ScriptApp.getProjectTriggers().forEach(function(t) {
+    if (t.getHandlerFunction() === 'onHomeEdit') ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger('onHomeEdit')
+    .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
+    .onEdit().create();
+  Logger.log('HOME auto-stamp trigger installed');
+}
+
+/** Backfill notes on existing HOME entries */
+function backfillHomeNotes() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('HOME') || ss.getSheetByName('Home');
+  if (!sheet) return;
+  var lastRow = sheet.getLastRow();
+  var lastCol = sheet.getLastColumn();
+  if (lastRow < 2) return;
+  
+  var data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
+  var notes = sheet.getRange(1, 1, lastRow, lastCol).getNotes();
+  var headers = data[0].map(function(h) { return String(h).trim().toUpperCase(); });
+  var newsCol = headers.indexOf('NEWS');
+  var blogCol = headers.indexOf('BLOG');
+  var now = Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM.yyyy HH:mm');
+  var author = getCurrentAuthorName();
+  var count = 0;
+  
+  [newsCol, blogCol].filter(function(c) { return c >= 0; }).forEach(function(colIdx) {
+    for (var i = 1; i < data.length; i++) {
+      if (!String(data[i][colIdx] || '').trim()) continue;
+      var note = notes[i][colIdx] || '';
+      // Stamp if no note, or if author is Unknown
+      if (!note || note.indexOf('|Unknown') !== -1) {
+        sheet.getRange(i + 1, colIdx + 1).setNote(now + '|' + author);
+        count++;
+      }
+    }
+  });
+  Logger.log('Backfilled ' + count + ' HOME notes');
+}
+
+
+/**
+ * Fetch crypto (BTC, ETH) and forex (USD, AUD, NZD) rates relative to EUR
+ * Uses Google Finance formulas (most reliable in Sheets environment)
+ */
+function getCryptoAndForexRates() {
+  var result = { rates: { EUR: 1 }, btcEur: 0, ethEur: 0, btcChange: 0, ethChange: 0 };
+  
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var tempSheet = ss.getSheetByName('_rates');
+    if (!tempSheet) {
+      tempSheet = ss.insertSheet('_rates');
+      tempSheet.hideSheet();
+    }
+    
+    // Set formulas
+    var formulas = [
+      ['=GOOGLEFINANCE("CURRENCY:EURUSD")', '=GOOGLEFINANCE("CURRENCY:EURAUD")', '=GOOGLEFINANCE("CURRENCY:EURNZD")'],
+      ['=GOOGLEFINANCE("BTCEUR")', '=GOOGLEFINANCE("ETHEUR")', '=GOOGLEFINANCE("CURRENCY:EURCAD")']
+    ];
+    tempSheet.getRange('A1:C2').setValues(formulas);
+    SpreadsheetApp.flush();
+    Utilities.sleep(2000);
+    
+    var vals = tempSheet.getRange('A1:C2').getValues();
+    
+    // Forex rates (EUR base)
+    result.rates['USD'] = parseFloat(vals[0][0]) || 1.08;
+    result.rates['AUD'] = parseFloat(vals[0][1]) || 1.65;
+    result.rates['NZD'] = parseFloat(vals[0][2]) || 1.78;
+    result.rates['CAD'] = parseFloat(vals[1][2]) || 1.47;
+    
+    // Crypto (price in EUR)
+    var btcPrice = parseFloat(vals[1][0]) || 0;
+    var ethPrice = parseFloat(vals[1][1]) || 0;
+    
+    if (btcPrice > 0) {
+      result.btcEur = btcPrice;
+      result.rates['BTC'] = 1 / btcPrice;
+    }
+    if (ethPrice > 0) {
+      result.ethEur = ethPrice;
+      result.rates['ETH'] = 1 / ethPrice;
+    }
+    
+    Logger.log('Rates loaded via Google Finance: BTC=' + btcPrice + ', ETH=' + ethPrice + ', USD=' + result.rates['USD']);
+    
+  } catch (e) {
+    Logger.log('Google Finance error: ' + e);
+  }
+  
+  // Fallback to CoinGecko for crypto if Google Finance failed
+  if (!result.btcEur) {
+    try {
+      var url = 'https://api.coingecko.com/api/v3/simple/price?ids=bitcoin,ethereum&vs_currencies=eur&include_24hr_change=true';
+      var resp = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
+      var data = JSON.parse(resp.getContentText());
+      if (data.bitcoin) {
+        result.btcEur = data.bitcoin.eur || 0;
+        result.btcChange = data.bitcoin.eur_24h_change || 0;
+        result.rates['BTC'] = 1 / (data.bitcoin.eur || 1);
+      }
+      if (data.ethereum) {
+        result.ethEur = data.ethereum.eur || 0;
+        result.ethChange = data.ethereum.eur_24h_change || 0;
+        result.rates['ETH'] = 1 / (data.ethereum.eur || 1);
+      }
+    } catch (e2) { Logger.log('CoinGecko fallback error: ' + e2); }
+  }
+  
+  return result;
+}
+
+
+// ===================== BIRTHDAY CALENDAR =====================
+
+/**
+ * Get upcoming player birthdays from PROFILING sheet
+ * Returns players sorted by days until birthday
+ */
+function getUpcomingBirthdays() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    if (!sheet) return { birthdays: [] };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { birthdays: [] };
+    
+    var headers = data[0];
+    var emailCol = -1, nameCol = -1, bdayCol = -1, countryCol = -1;
+    
+    for (var h = 0; h < headers.length; h++) {
+      var hdr = String(headers[h] || '').toLowerCase().trim();
+      if (hdr.indexOf('email') !== -1 && emailCol === -1) emailCol = h;
+      if ((hdr === 'name' || hdr === 'player name' || hdr === 'full name' || hdr.indexOf('name') !== -1) && nameCol === -1) nameCol = h;
+      if (hdr.indexOf('birthday') !== -1 || hdr.indexOf('birth date') !== -1 || hdr === 'dob' || hdr === 'date of birth') bdayCol = h;
+      if (hdr.indexOf('country') !== -1 && countryCol === -1) countryCol = h;
+    }
+    
+    if (bdayCol === -1) return { birthdays: [], error: 'No birthday column found' };
+    
+    var today = new Date();
+    var todayMonth = today.getMonth();
+    var todayDay = today.getDate();
+    var results = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var bday = data[i][bdayCol];
+      if (!bday) continue;
+      
+      var bdayDate;
+      if (bday instanceof Date) {
+        bdayDate = bday;
+      } else {
+        bdayDate = new Date(bday);
+        if (isNaN(bdayDate.getTime())) continue;
+      }
+      
+      var bMonth = bdayDate.getMonth();
+      var bDay = bdayDate.getDate();
+      
+      // Calculate days until birthday this year
+      var nextBday = new Date(today.getFullYear(), bMonth, bDay);
+      if (nextBday < today) {
+        nextBday = new Date(today.getFullYear() + 1, bMonth, bDay);
+      }
+      var daysUntil = Math.ceil((nextBday - today) / (1000 * 60 * 60 * 24));
+      
+      var email = emailCol >= 0 ? String(data[i][emailCol] || '').trim() : '';
+      var name = nameCol >= 0 ? String(data[i][nameCol] || '').trim() : email.split('@')[0];
+      var country = countryCol >= 0 ? String(data[i][countryCol] || '').trim() : '';
+      
+      if (!email && !name) continue;
+      
+      results.push({
+        email: email,
+        name: name || email,
+        country: country,
+        birthday: Utilities.formatDate(bdayDate, 'Europe/Kiev', 'dd.MM'),
+        birthdayFull: Utilities.formatDate(bdayDate, 'Europe/Kiev', 'dd.MM.yyyy'),
+        daysUntil: daysUntil,
+        isToday: daysUntil === 0,
+        age: today.getFullYear() - bdayDate.getFullYear()
+      });
+    }
+    
+    results.sort(function(a, b) { return a.daysUntil - b.daysUntil; });
+    
+    return { birthdays: results.slice(0, 30) }; // top 30 upcoming
+    
+  } catch (e) {
+    Logger.log('getUpcomingBirthdays error: ' + e);
+    return { birthdays: [], error: e.message };
+  }
+}
+
+// ===================== PROMO PLAN =====================
+
+/**
+ * Get promo plan from PROMO_PLAN sheet
+ */
+function getPromoPlan() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PROMO_PLAN');
+    
+    if (!sheet) {
+      initPromoPlanSheet();
+      sheet = ss.getSheetByName('PROMO_PLAN');
+    }
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { events: [] };
+    
+    var headers = data[0].map(function(h) { return String(h).trim().toUpperCase(); });
+    var dateCol = headers.indexOf('DATE');
+    var nameCol = headers.indexOf('EVENT');
+    var typeCol = headers.indexOf('TYPE');
+    var descCol = headers.indexOf('DESCRIPTION');
+    var statusCol = headers.indexOf('STATUS');
+    
+    if (dateCol === -1 || nameCol === -1) return { events: [] };
+    
+    var today = new Date();
+    today.setHours(0, 0, 0, 0);
+    var events = [];
+    
+    for (var i = 1; i < data.length; i++) {
+      var d = data[i][dateCol];
+      if (!d) continue;
+      
+      var eventDate;
+      if (d instanceof Date) {
+        eventDate = d;
+      } else {
+        eventDate = new Date(d);
+        if (isNaN(eventDate.getTime())) continue;
+      }
+      
+      var diffDays = Math.ceil((eventDate - today) / (1000 * 60 * 60 * 24));
+      
+      events.push({
+        date: Utilities.formatDate(eventDate, 'Europe/Kiev', 'dd.MM.yyyy'),
+        dateShort: Utilities.formatDate(eventDate, 'Europe/Kiev', 'dd MMM'),
+        dayOfWeek: Utilities.formatDate(eventDate, 'Europe/Kiev', 'EEE'),
+        event: String(data[i][nameCol] || '').trim(),
+        type: typeCol >= 0 ? String(data[i][typeCol] || '').trim() : '',
+        description: descCol >= 0 ? String(data[i][descCol] || '').trim() : '',
+        status: statusCol >= 0 ? String(data[i][statusCol] || '').trim() : '',
+        daysUntil: diffDays,
+        isPast: diffDays < 0,
+        isToday: diffDays === 0
+      });
+    }
+    
+    // Sort: upcoming first, then past
+    events.sort(function(a, b) {
+      if (a.isPast !== b.isPast) return a.isPast ? 1 : -1;
+      return a.daysUntil - b.daysUntil;
+    });
+    
+    return { events: events };
+    
+  } catch (e) {
+    Logger.log('getPromoPlan error: ' + e);
+    return { events: [], error: e.message };
+  }
+}
+
+/**
+ * Create PROMO_PLAN sheet with holidays pre-filled
+ */
+function initPromoPlanSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('PROMO_PLAN');
+  if (sheet) return;
+  
+  sheet = ss.insertSheet('PROMO_PLAN');
+  
+  // Headers
+  sheet.getRange('A1:E1').setValues([['DATE', 'EVENT', 'TYPE', 'DESCRIPTION', 'STATUS']]);
+  sheet.getRange('A1:E1').setFontWeight('bold').setBackground('#1e293b').setFontColor('#ffffff');
+  
+  // Pre-fill with 2025-2026 holidays
+  var holidays = [
+    ['2025-01-01', "New Year's Day", 'Holiday', 'Global celebration', ''],
+    ['2025-01-07', 'Orthodox Christmas', 'Holiday', 'UA/Eastern Europe', ''],
+    ['2025-01-14', 'Old New Year', 'Holiday', 'UA tradition', ''],
+    ['2025-02-14', "Valentine's Day", 'Promo', 'Love-themed promotions', ''],
+    ['2025-03-08', "Women's Day", 'Holiday', 'International', ''],
+    ['2025-03-17', "St. Patrick's Day", 'Promo', 'Irish-themed promo', ''],
+    ['2025-04-20', 'Easter (Western)', 'Holiday', 'Western Easter', ''],
+    ['2025-04-20', 'Easter (Orthodox)', 'Holiday', 'Orthodox Easter 2025', ''],
+    ['2025-05-01', 'Labour Day', 'Holiday', 'International', ''],
+    ['2025-05-09', 'Victory Day', 'Holiday', 'Europe', ''],
+    ['2025-06-28', 'Constitution Day UA', 'Holiday', 'Ukraine', ''],
+    ['2025-07-04', 'Independence Day US', 'Promo', 'USA market', ''],
+    ['2025-08-24', 'Independence Day UA', 'Holiday', 'Ukraine', ''],
+    ['2025-10-14', 'Defenders Day UA', 'Holiday', 'Ukraine', ''],
+    ['2025-10-31', 'Halloween', 'Promo', 'Spooky-themed promotions', ''],
+    ['2025-11-27', 'Thanksgiving', 'Promo', 'USA market', ''],
+    ['2025-11-28', 'Black Friday', 'Promo', 'Mega promotions', ''],
+    ['2025-12-01', 'Cyber Monday', 'Promo', 'Online promotions', ''],
+    ['2025-12-06', 'St. Nicholas Day', 'Promo', 'Gift-themed', ''],
+    ['2025-12-24', 'Christmas Eve', 'Holiday', 'Western', ''],
+    ['2025-12-25', 'Christmas Day', 'Holiday', 'Western', ''],
+    ['2025-12-31', "New Year's Eve", 'Holiday', 'Global', ''],
+    ['2026-01-01', "New Year's Day", 'Holiday', 'Global', ''],
+    ['2026-01-07', 'Orthodox Christmas', 'Holiday', 'UA/Eastern Europe', ''],
+    ['2026-02-14', "Valentine's Day", 'Promo', 'Love-themed promotions', ''],
+    ['2026-03-08', "Women's Day", 'Holiday', 'International', ''],
+    ['2026-03-17', "St. Patrick's Day", 'Promo', 'Irish-themed', ''],
+    ['2026-04-05', 'Easter (Western)', 'Holiday', 'Western Easter 2026', ''],
+    ['2026-04-12', 'Easter (Orthodox)', 'Holiday', 'Orthodox Easter 2026', ''],
+    ['2026-05-01', 'Labour Day', 'Holiday', 'International', ''],
+    ['2026-06-28', 'Constitution Day UA', 'Holiday', 'Ukraine', ''],
+    ['2026-08-24', 'Independence Day UA', 'Holiday', 'Ukraine', ''],
+    ['2026-10-31', 'Halloween', 'Promo', 'Spooky-themed', ''],
+    ['2026-11-26', 'Thanksgiving', 'Promo', 'USA market', ''],
+    ['2026-11-27', 'Black Friday', 'Promo', 'Mega promotions', ''],
+    ['2026-12-25', 'Christmas Day', 'Holiday', 'Western', ''],
+    ['2026-12-31', "New Year's Eve", 'Holiday', 'Global', '']
+  ];
+  
+  if (holidays.length > 0) {
+    sheet.getRange(2, 1, holidays.length, 5).setValues(holidays);
+    // Format date column
+    sheet.getRange(2, 1, holidays.length, 1).setNumberFormat('yyyy-mm-dd');
+  }
+  
+  sheet.setColumnWidth(1, 120);
+  sheet.setColumnWidth(2, 250);
+  sheet.setColumnWidth(3, 100);
+  sheet.setColumnWidth(4, 250);
+  sheet.setColumnWidth(5, 100);
+  
+  // Add status dropdown
+  var statusRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['', 'Planned', 'In Progress', 'Done', 'Cancelled'], true)
+    .build();
+  sheet.getRange(2, 5, 200, 1).setDataValidation(statusRule);
+  
+  // Add type dropdown
+  var typeRule = SpreadsheetApp.newDataValidation()
+    .requireValueInList(['Holiday', 'Promo', 'Tournament', 'VIP Event', 'Other'], true)
+    .build();
+  sheet.getRange(2, 3, 200, 1).setDataValidation(typeRule);
+  
+  Logger.log('PROMO_PLAN sheet created with ' + holidays.length + ' events');
 }
