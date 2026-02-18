@@ -1,0 +1,3246 @@
+<!DOCTYPE html>
+<html data-theme="dark">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Bonus Calculator</title>
+  <style>
+    :root {
+      --bg-primary: #0B0F19;
+      --bg-secondary: #151923;
+      --surface: #1E2330;
+      --surface-elevated: #252B3D;
+      
+      --text-primary: #FFFFFF;
+      --text-secondary: #A0AEC0;
+      --text-muted: #64748B;
+      
+      --accent-primary: #3B82F6;
+      --accent-secondary: #8B5CF6;
+      --accent-success: #10B981;
+      --accent-warning: #F59E0B;
+      --accent-danger: #EF4444;
+      
+      --border: rgba(255, 255, 255, 0.08);
+      --border-hover: rgba(255, 255, 255, 0.15);
+      
+      --shadow: 0 4px 16px rgba(0, 0, 0, 0.2);
+      --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.3);
+    }
+
+    [data-theme="light"] {
+      --bg-primary: #F8FAFC;
+      --bg-secondary: #F1F5F9;
+      --surface: #FFFFFF;
+      --surface-elevated: #F8FAFC;
+      
+      --text-primary: #0F172A;
+      --text-secondary: #475569;
+      --text-muted: #94A3B8;
+      
+      --border: rgba(0, 0, 0, 0.1);
+      --border-hover: rgba(0, 0, 0, 0.2);
+      
+      --shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+      --shadow-lg: 0 4px 16px rgba(0, 0, 0, 0.12);
+    }
+
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    
+    html, body { height: 100%; overflow: hidden; }
+    
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      transition: all 0.3s;
+      position: relative;
+      overflow-x: hidden;
+    }
+    
+    body::before {
+      content: '';
+      position: fixed;
+      top: -50%;
+      left: -50%;
+      width: 200%;
+      height: 200%;
+      background: 
+        radial-gradient(circle at 20% 50%, rgba(59, 130, 246, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 80% 80%, rgba(139, 92, 246, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 40% 20%, rgba(16, 185, 129, 0.03) 0%, transparent 40%);
+      animation: drift-background 25s ease-in-out infinite;
+      pointer-events: none;
+      z-index: 0;
+      opacity: 0.7;
+    }
+    
+    @keyframes drift-background {
+      0%, 100% {
+        transform: translate(0, 0) rotate(0deg);
+      }
+      33% {
+        transform: translate(2%, -2%) rotate(0.5deg);
+      }
+      66% {
+        transform: translate(-2%, 2%) rotate(-0.5deg);
+      }
+    }
+
+    #splash {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 24px;
+      background: var(--bg-primary);
+      z-index: 9999;
+      transition: opacity 0.4s, visibility 0.4s;
+    }
+
+    #splash.hide {
+      opacity: 0;
+      visibility: hidden;
+    }
+
+    .splash-logo {
+      font-size: 48px;
+      font-weight: 900;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+
+    .loader {
+      width: 50px;
+      height: 50px;
+      border: 3px solid var(--border);
+      border-top-color: var(--accent-primary);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+    }
+
+    @keyframes spin {
+      to { transform: rotate(360deg); }
+    }
+
+    .app {
+      position: fixed;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      padding: 16px;
+      gap: 16px;
+      opacity: 0;
+      transition: opacity 0.3s;
+      z-index: 1;
+    }
+
+    .header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 16px 24px;
+      background: var(--surface);
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      box-shadow: var(--shadow);
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 800;
+      font-size: 18px;
+      cursor: pointer;
+      transition: opacity 0.2s;
+    }
+    
+    .brand:hover {
+      opacity: 0.8;
+    }
+
+    .brand-icon {
+      width: 40px;
+      height: 40px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      border-radius: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+    }
+
+    .email-section {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-width: 400px;
+    }
+
+    .email-input {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 13px;
+      font-weight: 600;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .email-input:hover {
+      border-color: var(--border-hover);
+    }
+
+    .email-input:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .favorite-games-box {
+      padding: 16px;
+      background: rgba(139, 92, 246, 0.1);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 12px;
+      margin-bottom: 16px;
+    }
+
+    .favorite-header {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--accent-secondary);
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      user-select: none;
+      transition: opacity 0.2s;
+    }
+    
+    .favorite-header:hover {
+      opacity: 0.8;
+    }
+    
+    .favorite-toggle {
+      background: none;
+      border: none;
+      color: var(--accent-secondary);
+      font-size: 14px;
+      cursor: pointer;
+      padding: 4px 8px;
+      border-radius: 4px;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    
+    .favorite-toggle:hover {
+      background: rgba(139, 92, 246, 0.2);
+    }
+    
+    .favorite-toggle.collapsed {
+      transform: rotate(-90deg);
+    }
+    
+    .favorite-content {
+      max-height: 500px;
+      overflow: hidden;
+      transition: max-height 0.3s ease-in-out, opacity 0.3s ease-in-out;
+      opacity: 1;
+    }
+    
+    .favorite-content.collapsed {
+      max-height: 0;
+      opacity: 0;
+    }
+
+    .favorite-list {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .favorite-list li {
+      padding: 6px 12px;
+      background: var(--surface-elevated);
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .favorite-list li::before {
+      content: '•';
+      color: var(--accent-secondary);
+      font-size: 16px;
+      font-weight: 900;
+    }
+
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 20px;
+    }
+
+    .clear-btn {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-size: 18px;
+    }
+
+    .clear-btn:hover {
+      background: rgba(239, 68, 68, 0.1);
+      border-color: var(--accent-danger);
+      transform: scale(1.1);
+    }
+
+    .calc-btn {
+      padding: 8px 16px;
+      border-radius: 8px;
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      border: none;
+      color: white;
+      font-weight: 700;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+      box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+      animation: pulse-button 2.5s ease-in-out infinite;
+    }
+
+    @keyframes pulse-button {
+      0%, 100% {
+        box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3);
+        transform: scale(1);
+      }
+      50% {
+        box-shadow: 0 4px 16px rgba(59, 130, 246, 0.5), 0 0 20px rgba(139, 92, 246, 0.3);
+        transform: scale(1.03);
+      }
+    }
+
+    .calc-btn:hover {
+      transform: translateY(-2px) scale(1.05);
+      box-shadow: 0 6px 20px rgba(59, 130, 246, 0.6);
+      animation: none;
+    }
+
+    .calc-btn:active {
+      transform: translateY(0) scale(0.98);
+    }
+    
+    .calc-btn:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+      animation: none;
+    }
+
+    .theme-toggle {
+      width: 50px;
+      height: 26px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 13px;
+      cursor: pointer;
+      position: relative;
+      transition: all 0.3s;
+    }
+
+    .theme-toggle::before {
+      content: '🌙';
+      position: absolute;
+      left: 3px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 20px;
+      height: 20px;
+      background: var(--accent-primary);
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 12px;
+      transition: all 0.3s;
+    }
+
+    [data-theme="light"] .theme-toggle::before {
+      content: '☀️';
+      left: calc(100% - 23px);
+    }
+
+    .category-tabs {
+      display: flex;
+      gap: 8px;
+      padding: 4px;
+      background: var(--surface);
+      border-radius: 12px;
+      border: 1px solid var(--border);
+    }
+
+    .category-tab {
+      flex: 1;
+      padding: 12px 20px;
+      border-radius: 10px;
+      font-weight: 700;
+      font-size: 14px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--text-muted);
+    }
+
+    .category-tab.active {
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      color: white;
+    }
+
+    .calculator-tabs {
+      display: flex;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px 0;
+      scrollbar-width: none;
+      flex: 1;
+    }
+
+    .calculator-tabs::-webkit-scrollbar {
+      display: none;
+    }
+
+    .tabs-container {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 4px;
+    }
+
+    .refresh-btn {
+      padding: 10px 18px;
+      border-radius: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .refresh-btn:hover {
+      background: var(--accent-primary);
+      border-color: var(--accent-primary);
+      color: white;
+      transform: translateY(-1px);
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.3);
+    }
+
+    .refresh-btn span {
+      font-size: 14px;
+      display: inline-block;
+      transition: transform 0.3s ease;
+    }
+
+    .refresh-btn:hover span {
+      transform: rotate(180deg);
+    }
+
+    .toast-message {
+      position: fixed;
+      bottom: -100px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 20px;
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text);
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      z-index: 10001;
+      transition: all 0.3s ease;
+    }
+
+    .toast-message.show {
+      bottom: 30px;
+    }
+
+    @keyframes spin {
+      from { transform: rotate(0deg); }
+      to { transform: rotate(360deg); }
+    }
+
+    .calculator-tab {
+      padding: 10px 20px;
+      border-radius: 10px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      color: var(--text-secondary);
+      font-weight: 600;
+      font-size: 13px;
+      cursor: pointer;
+      transition: all 0.2s;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .calculator-tab:hover {
+      background: var(--surface-elevated);
+      color: var(--text-primary);
+      transform: translateY(-1px);
+    }
+
+    .calculator-tab.active {
+      background: rgba(59, 130, 246, 0.15);
+      border-color: var(--accent-primary);
+      color: var(--accent-primary);
+    }
+
+    .fb-variant-tabs {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 16px;
+      padding: 4px;
+      background: var(--surface-elevated);
+      border-radius: 10px;
+      border: 1px solid var(--border);
+    }
+
+    .fb-variant-tab {
+      flex: 1;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-weight: 700;
+      font-size: 12px;
+      text-align: center;
+      cursor: pointer;
+      transition: all 0.2s;
+      color: var(--text-muted);
+      background: transparent;
+    }
+
+    .fb-variant-tab:hover {
+      color: var(--text-primary);
+      background: var(--surface);
+    }
+
+    .fb-variant-tab.active {
+      background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+      color: white;
+    }
+
+    .content {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 16px;
+      overflow: hidden;
+    }
+
+    .panel {
+      background: var(--surface);
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      padding: 20px;
+      overflow-y: auto;
+      box-shadow: var(--shadow);
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+    }
+
+    .panel::-webkit-scrollbar {
+      width: 6px;
+    }
+
+    .panel::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 3px;
+    }
+
+    .panel-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .warning-box {
+      padding: 16px;
+      background: rgba(239, 68, 68, 0.1);
+      border: 2px solid var(--accent-danger);
+      border-radius: 12px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .warning-box.show {
+      display: block;
+      animation: shake 0.5s;
+    }
+
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-5px); }
+      75% { transform: translateX(5px); }
+    }
+
+    .warning-title {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--accent-danger);
+      margin-bottom: 4px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .warning-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+    }
+
+    .info-box {
+      padding: 14px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 10px;
+      margin-bottom: 16px;
+      display: none;
+    }
+
+    .info-box.show {
+      display: block;
+    }
+
+    .info-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 6px 0;
+    }
+
+    .info-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 600;
+    }
+
+    .info-value {
+      font-size: 14px;
+      font-weight: 800;
+      color: var(--accent-primary);
+    }
+
+    .field-group {
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    /* ✅ Вирівнювання висоти для output fields */
+    #outputFields .field-group-content {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+      align-items: stretch;
+    }
+
+    #outputFields .field {
+      height: 100%;
+      display: flex;
+      flex-direction: column;
+    }
+
+    #outputFields .field .inp {
+      flex-grow: 1;
+      display: flex;
+      align-items: center;
+    }
+
+    .field-group-content {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .field {
+      padding: 0;
+      background: transparent;
+      border: none;
+      transition: all 0.2s;
+    }
+
+    .field:hover {
+      transform: none;
+    }
+
+    .field-label {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 8px;
+    }
+
+    .field-label-wrapper {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      line-height: 1;
+    }
+
+    .field-label-wrapper .field-label {
+      margin-bottom: 0;
+    }
+
+    .info-icon {
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: var(--accent-primary);
+      color: white;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 11px;
+      font-weight: 700;
+      font-style: italic;
+      cursor: pointer;
+      flex-shrink: 0;
+      transition: all 0.2s ease;
+    }
+
+    .info-icon:hover {
+      background: var(--accent-secondary);
+      transform: scale(1.1);
+    }
+
+    .tooltip-panel {
+      position: absolute;
+      background: var(--bg);
+      border: 2px solid var(--accent-primary);
+      border-radius: 12px;
+      padding: 16px;
+      max-width: 300px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+      z-index: 10000;
+      opacity: 0;
+      transform: translateY(5px);
+      transition: all 0.2s ease;
+      backdrop-filter: blur(10px);
+    }
+
+    .tooltip-panel::after {
+      content: '';
+      position: absolute;
+      bottom: -12px;
+      left: var(--arrow-left, 50%);
+      transform: translateX(-50%);
+      width: 0;
+      height: 0;
+      border-left: 10px solid transparent;
+      border-right: 10px solid transparent;
+      border-top: 12px solid var(--accent-primary);
+      z-index: 1;
+    }
+
+    .tooltip-panel::before {
+      content: '';
+      position: absolute;
+      bottom: -10px;
+      left: var(--arrow-left, 50%);
+      transform: translateX(-50%);
+      width: 0;
+      height: 0;
+      border-left: 9px solid transparent;
+      border-right: 9px solid transparent;
+      border-top: 10px solid var(--bg);
+      z-index: 2;
+    }
+
+    .tooltip-panel.tooltip-below::after {
+      bottom: auto;
+      top: -12px;
+      border-top: none;
+      border-bottom: 12px solid var(--accent-primary);
+    }
+
+    .tooltip-panel.tooltip-below::before {
+      bottom: auto;
+      top: -10px;
+      border-top: none;
+      border-bottom: 10px solid var(--bg);
+    }
+
+    .tooltip-panel.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .tooltip-close {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--bg-secondary);
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 20px;
+      line-height: 1;
+      cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .tooltip-close:hover {
+      background: var(--accent-danger);
+      color: white;
+    }
+
+    .tooltip-content {
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text);
+      padding-right: 20px;
+      white-space: pre-wrap;
+      word-wrap: break-word;
+    }
+
+    /* ✅ RTP Filters Panel */
+    .rtp-filters-panel {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 20px;
+      width: 100%;
+      box-shadow: 0 2px 4px rgba(0, 0, 0, 0.05);
+    }
+
+    .rtp-filters-toggle {
+      width: 100%;
+      padding: 10px 14px;
+      background: var(--bg-secondary);
+      border: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+      transition: all 0.2s ease;
+    }
+
+    .rtp-filters-toggle:hover {
+      background: var(--bg-hover);
+    }
+
+    .toggle-arrow {
+      color: var(--accent-primary);
+      font-size: 10px;
+      transition: transform 0.2s ease;
+    }
+
+    .rtp-filters-content {
+      padding: 14px;
+      background: var(--bg);
+      border-top: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .filters-row {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+    }
+
+    .filters-bottom-row {
+      display: flex;
+      gap: 16px;
+      align-items: center;
+      padding-top: 10px;
+      margin-top: 2px;
+      border-top: 1px solid var(--border);
+    }
+
+    @media (max-width: 1200px) {
+      .filters-row {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 12px;
+      }
+      
+      .filters-bottom-row {
+        flex-direction: column;
+        align-items: stretch;
+        gap: 12px;
+      }
+    }
+
+    @media (max-width: 768px) {
+      .filters-row {
+        grid-template-columns: 1fr;
+        gap: 10px;
+      }
+      
+      .rtp-filters-content {
+        gap: 10px;
+      }
+      
+      .filters-bottom-row {
+        gap: 10px;
+      }
+      
+      .filter-section {
+        width: 100%;
+        max-width: none;
+      }
+      
+      .rtp-filters-clear {
+        width: 100%;
+        margin-left: 0;
+      }
+    }
+
+    .filter-section {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .filter-section.rtp-range-section {
+      flex: 1;
+      min-width: 200px;
+    }
+
+    .filter-label {
+      font-size: 10px;
+      font-weight: 700;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .filter-checkboxes {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-height: 100px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+
+    .filter-checkboxes::-webkit-scrollbar {
+      width: 3px;
+    }
+
+    .filter-checkboxes::-webkit-scrollbar-thumb {
+      background: var(--border);
+      border-radius: 2px;
+    }
+
+    .filter-checkbox-item {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+      padding: 3px 6px;
+      border-radius: 4px;
+      transition: background 0.2s ease;
+    }
+
+    .filter-checkbox-item:hover {
+      background: var(--bg-hover);
+    }
+
+    .filter-checkbox-item input[type="checkbox"] {
+      cursor: pointer;
+      width: 13px;
+      height: 13px;
+      margin: 0;
+    }
+
+    .filter-checkbox-item label {
+      cursor: pointer;
+      font-size: 11px;
+      color: var(--text);
+      user-select: none;
+      margin: 0;
+    }
+
+    .filter-multiselect {
+      padding: 6px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text);
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .filter-multiselect:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .filter-multiselect option {
+      padding: 4px;
+    }
+
+    .filter-multiselect option:checked {
+      background: var(--accent-primary);
+      color: white;
+    }
+
+    .filter-multiselect-dropdown {
+      width: 100%;
+      padding: 6px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 11px;
+      color: var(--text);
+      outline: none;
+      transition: all 0.2s ease;
+      cursor: pointer;
+    }
+
+    .filter-multiselect-dropdown:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .filter-multiselect-dropdown option {
+      padding: 4px 6px;
+      cursor: pointer;
+    }
+
+    .filter-multiselect-dropdown option:checked {
+      background: linear-gradient(var(--accent-primary), var(--accent-primary));
+      color: white;
+      font-weight: 600;
+    }
+
+    .filter-multiselect-dropdown option:hover {
+      background: var(--bg-hover);
+    }
+
+    .rtp-slider-container {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .rtp-range-input {
+      width: 65px;
+      padding: 6px 8px;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 12px;
+      color: var(--text);
+      outline: none;
+      transition: all 0.2s ease;
+    }
+
+    .rtp-range-input:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .rtp-range-separator {
+      color: var(--text-muted);
+      font-weight: 600;
+      font-size: 11px;
+    }
+
+    .rtp-range-display {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--accent-primary);
+      text-align: center;
+      padding: 4px 8px;
+      background: rgba(59, 130, 246, 0.1);
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .rtp-filters-clear {
+      padding: 8px 20px;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      cursor: pointer;
+      transition: all 0.2s ease;
+      white-space: nowrap;
+      align-self: center;
+      margin-left: auto;
+    }
+
+    .rtp-filters-clear:hover {
+      background: var(--accent-danger);
+      border-color: var(--accent-danger);
+      color: white;
+      transform: translateY(-1px);
+      box-shadow: 0 2px 8px rgba(239, 68, 68, 0.3);
+    }
+
+    .field-label.bold {
+      font-weight: 900;
+      color: var(--text-primary);
+    }
+
+    .input-wrap {
+      position: relative;
+    }
+
+    .input-prefix,
+    .input-suffix {
+      position: absolute;
+      top: 50%;
+      transform: translateY(-50%);
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--accent-primary);
+      pointer-events: none;
+    }
+
+    .input-prefix {
+      left: 12px;
+    }
+
+    .input-suffix {
+      right: 12px;
+    }
+
+    .input-wrap.has-prefix .inp {
+      padding-left: 36px;
+    }
+
+    .input-wrap.has-suffix .inp {
+      padding-right: 36px;
+    }
+
+    .inp {
+      width: 100%;
+      padding: 10px 12px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 14px;
+      font-weight: 600;
+      outline: none;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+
+    .inp.bold-value {
+      font-weight: 800;
+    }
+
+    .inp:hover {
+      border-color: var(--border-hover);
+    }
+
+    .inp:focus {
+      border-color: var(--accent-primary);
+      box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.1);
+    }
+
+    .inp.readonly {
+      background: var(--surface);
+      cursor: default;
+    }
+
+    .rtp-search {
+      position: relative;
+      margin-bottom: 12px;
+      z-index: 10;
+    }
+
+    .rtp-input {
+      width: 100%;
+      padding: 10px 12px 10px 36px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-size: 13px;
+      outline: none;
+      transition: all 0.2s;
+    }
+
+    .rtp-search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      font-size: 16px;
+      z-index: 1;
+    }
+
+    .rtp-list {
+      position: absolute;
+      z-index: 100;
+      left: 0;
+      right: 0;
+      max-height: 250px;
+      overflow-y: auto;
+      margin-top: 6px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-hover);
+      border-radius: 10px;
+      box-shadow: var(--shadow-lg);
+    }
+
+    .rtp-item {
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      cursor: pointer;
+      transition: all 0.15s;
+      font-size: 12px;
+    }
+
+    .rtp-item:hover {
+      background: rgba(59, 130, 246, 0.1);
+    }
+
+    .rtp-chosen {
+      margin-top: 8px;
+      padding: 6px 12px;
+      background: rgba(139, 92, 246, 0.15);
+      border: 1px solid rgba(139, 92, 246, 0.3);
+      border-radius: 16px;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .rtp-clear {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(239, 68, 68, 0.2);
+      border: none;
+      color: var(--accent-danger);
+      font-size: 12px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: all 0.2s;
+    }
+
+    .rtp-clear:hover {
+      background: var(--accent-danger);
+      color: white;
+      transform: scale(1.1);
+    }
+
+    .summary-box {
+      padding: 16px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      margin-top: 16px;
+      display: none;
+    }
+
+    .summary-box.show {
+      display: block;
+    }
+
+    .summary-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .summary-title {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text-primary);
+    }
+
+    .copy-summary-btn {
+      padding: 6px 12px;
+      background: rgba(59, 130, 246, 0.1);
+      border: 1px solid rgba(59, 130, 246, 0.3);
+      border-radius: 6px;
+      color: var(--accent-primary);
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+
+    .copy-summary-btn:hover {
+      background: rgba(59, 130, 246, 0.2);
+    }
+
+    .summary-content {
+      font-size: 12px;
+      line-height: 1.8;
+      color: var(--text-secondary);
+    }
+
+    .summary-line {
+      display: flex;
+      justify-content: space-between;
+      padding: 4px 0;
+    }
+
+    .summary-line-label {
+      font-weight: 600;
+    }
+
+    .summary-line-value {
+      font-weight: 800;
+      color: var(--text-primary);
+    }
+
+    .toast {
+      position: fixed;
+      right: 20px;
+      bottom: 20px;
+      padding: 14px 20px;
+      background: var(--surface-elevated);
+      border: 1px solid var(--border-hover);
+      border-radius: 10px;
+      box-shadow: var(--shadow-lg);
+      color: var(--text-primary);
+      font-weight: 600;
+      font-size: 13px;
+      opacity: 0;
+      transform: translateY(10px);
+      transition: all 0.3s;
+      z-index: 10000;
+    }
+
+    .toast.show {
+      opacity: 1;
+      transform: translateY(0);
+    }
+
+    .toast.success {
+      border-color: var(--accent-success);
+    }
+
+    .toast.error {
+      border-color: var(--accent-danger);
+    }
+
+    @media (max-width: 1024px) {
+      .content {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="splash">
+    <div class="splash-logo">💎 Bonus Calculator</div>
+    <div class="loader"></div>
+  </div>
+
+  <div class="app" id="app">
+    <div class="header">
+      <div class="brand">
+        <div class="brand-icon">💎</div>
+        <span>Bonus Calculator</span>
+      </div>
+      
+      <div class="email-section">
+        <input type="email" id="emailInput" class="email-input" placeholder="Enter player email...">
+      </div>
+      
+      <div class="header-right">
+        <button class="calc-btn" id="calcBtn" title="Calculate (Ctrl+Enter)">⚡ Calculate</button>
+        <div class="clear-btn" id="clearBtn" title="Clear all fields">🗑️</div>
+        <div class="theme-toggle" id="themeToggle"></div>
+      </div>
+    </div>
+
+    <div class="category-tabs" id="categoryTabs"></div>
+    <div class="tabs-container">
+      <div class="calculator-tabs" id="calculatorTabs"></div>
+      <button class="refresh-btn" id="refreshBtn" title="Refresh data from Google Sheets">
+        <span>🔄</span> Refresh
+      </button>
+    </div>
+
+    <div class="content">
+      <div class="panel">
+        <div class="panel-title">⚡ Input Fields</div>
+        
+        <div id="favoriteGames" class="favorite-games-box" style="display: none;">
+          <div class="favorite-header" id="favoriteHeader">
+            <span>⭐ Player's Favorite Games</span>
+            <button class="favorite-toggle" id="favoriteToggle">▼</button>
+          </div>
+          <div id="favoriteContent" class="favorite-content">
+            <ul id="favoriteGamesList" class="favorite-list"></ul>
+          </div>
+        </div>
+        
+        <div id="inputFields"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-title">📊 Results</div>
+        <div id="fbVariantTabs" class="fb-variant-tabs" style="display: none;"></div>
+        <div id="warningBox" class="warning-box">
+          <div class="warning-title">⚠️ Warning: Bonus Rate Exceeded!</div>
+          <div class="warning-text" id="warningText"></div>
+        </div>
+        <div id="infoBox" class="info-box"></div>
+        <div id="outputFields"></div>
+        
+        <div id="summaryBox" class="summary-box">
+          <div class="summary-header">
+            <div class="summary-title">📋 Summary</div>
+            <button class="copy-summary-btn" id="copySummaryBtn">Copy</button>
+          </div>
+          <div class="summary-content" id="summaryContent"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+
+  <script>
+    const $ = s => document.querySelector(s);
+    const $$ = s => document.querySelectorAll(s);
+    const el = (tag, className) => {
+      const element = document.createElement(tag);
+      if (className) element.className = className;
+      return element;
+    };
+
+    const state = {
+      config: null,
+      category: null,
+      activeSheet: null,
+      activeCalc: null,
+      activeFBVariant: null,
+      lootboxItems: null,
+      inputs: {},
+      outputs: {}, // ✅ Зберігаємо outputs для кожного калькулятора
+      thresholds: {},
+      maxBonusRate: null,
+      expectedBonusInfo: {},
+      warningInfo: {}, // ✅ Зберігаємо warnings
+      summaryInfo: {}, // ✅ Зберігаємо summaries
+      selectedRTPGame: null,
+      rtpGames: [], // ✅ Всі RTP ігри
+      rtpFilters: { // ✅ Фільтри для RTP
+        providers: [], // ✅ Додаємо providers
+        categories: [],
+        volatilities: [],
+        betLevels: [],
+        rtpRange: [90, 100]
+      },
+      lastRTPList: null, // ✅ Посилання на останній RTP list
+      lastRTPInput: null // ✅ Посилання на останній RTP input
+    };
+
+    $('#themeToggle').addEventListener('click', () => {
+      const html = document.documentElement;
+      const current = html.getAttribute('data-theme');
+      html.setAttribute('data-theme', current === 'dark' ? 'light' : 'dark');
+      localStorage.setItem('theme', current === 'dark' ? 'light' : 'dark');
+    });
+
+    const savedTheme = localStorage.getItem('theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', savedTheme);
+
+    function toast(message, type = 'success') {
+      const toastEl = $('#toast');
+      toastEl.textContent = message;
+      toastEl.className = 'toast show ' + type;
+      setTimeout(() => toastEl.classList.remove('show'), type === 'error' ? 3000 : 2000);
+    }
+
+    function parseLabel(label) {
+      const original = label;
+      let clean = label;
+      let currency = null;
+      let percent = false;
+      let info = false;
+
+      clean = clean.replace(/\[€\]\s*/g, () => { currency = 'EUR'; return ''; });
+      clean = clean.replace(/\[%\]\s*/g, () => { percent = true; return ''; });
+      clean = clean.replace(/\[INFO\]\s*/g, () => { info = true; return ''; });
+      clean = clean.replace(/\[FS\]\s*/g, '');
+      clean = clean.replace(/\[CASH\]\s*/g, '');
+      clean = clean.replace(/\[ALL\]\s*/g, '');
+      clean = clean.replace(/\[RESULT\]\s*/g, '');
+      
+      clean = clean.trim();
+
+      return { original, clean, currency, percent, info };
+    }
+
+    function normalizePercentValue(value, isPercent) {
+      if (!isPercent) return value;
+      
+      const num = Number(value);
+      if (isNaN(num)) return value;
+      
+      return num >= 1 ? num / 100 : num;
+    }
+
+    // ✅ Показуємо toast повідомлення
+    function showToast(message) {
+      const toast = document.createElement('div');
+      toast.className = 'toast-message';
+      toast.textContent = message;
+      document.body.appendChild(toast);
+      
+      setTimeout(() => toast.classList.add('show'), 10);
+      
+      setTimeout(() => {
+        toast.classList.remove('show');
+        setTimeout(() => toast.remove(), 300);
+      }, 3000);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      $('#clearBtn').addEventListener('click', clearAll);
+      $('#copySummaryBtn').addEventListener('click', copySummary);
+      $('#calcBtn').addEventListener('click', () => calculate(false));
+      
+      // ✅ Refresh button - очищує кеш і перезавантажує дані
+      $('#refreshBtn').addEventListener('click', () => {
+        const btn = $('#refreshBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span style="display:inline-block;animation:spin 1s linear infinite;">🔄</span> Refreshing...';
+        
+        google.script.run
+          .withSuccessHandler(() => {
+            // Перезавантажуємо конфігурацію
+            google.script.run
+              .withSuccessHandler(data => {
+                onConfigLoaded(data);
+                btn.disabled = false;
+                btn.innerHTML = '<span>🔄</span> Refresh';
+                showToast('✅ Data refreshed successfully!');
+              })
+              .withFailureHandler(err => {
+                btn.disabled = false;
+                btn.innerHTML = '<span>🔄</span> Refresh';
+                showToast('❌ Failed to refresh: ' + err);
+              })
+              .getConfig();
+          })
+          .withFailureHandler(err => {
+            btn.disabled = false;
+            btn.innerHTML = '<span>🔄</span> Refresh';
+            showToast('❌ Failed to clear cache: ' + err);
+          })
+          .clearCache();
+      });
+      
+      $('.brand').addEventListener('click', () => {
+        $('#emailInput').value = '';
+        $('#favoriteGames').style.display = 'none';
+        clearAll();
+      });
+      
+      $('#favoriteHeader').addEventListener('click', () => {
+        const content = $('#favoriteContent');
+        const toggle = $('#favoriteToggle');
+        
+        if (content.classList.contains('collapsed')) {
+          content.classList.remove('collapsed');
+          toggle.classList.remove('collapsed');
+          toggle.textContent = '▼';
+        } else {
+          content.classList.add('collapsed');
+          toggle.classList.add('collapsed');
+          toggle.textContent = '▶';
+        }
+      });
+
+      $('#emailInput').addEventListener('input', debounce(function() {
+        const email = this.value.trim();
+        
+        if (email && email.includes('@')) {
+          google.script.run
+            .withSuccessHandler(prefs => {
+              if (prefs && prefs.games) {
+                const gamesList = prefs.games.split(',').map(g => g.trim()).filter(g => g);
+                
+                const listEl = $('#favoriteGamesList');
+                listEl.innerHTML = '';
+                
+                gamesList.forEach(game => {
+                  const li = document.createElement('li');
+                  li.textContent = game;
+                  listEl.appendChild(li);
+                });
+                
+                const content = $('#favoriteContent');
+                const toggle = $('#favoriteToggle');
+                content.classList.remove('collapsed');
+                toggle.classList.remove('collapsed');
+                toggle.textContent = '▼';
+                
+                $('#favoriteGames').style.display = 'block';
+              } else {
+                $('#favoriteGames').style.display = 'none';
+              }
+            })
+            .withFailureHandler(() => {
+              $('#favoriteGames').style.display = 'none';
+            })
+            .getPlayerPreferences(email);
+        } else {
+          $('#favoriteGames').style.display = 'none';
+        }
+      }, 500));
+
+      document.addEventListener('keydown', e => {
+        if (e.key === 'Enter') {
+          const target = e.target;
+          if (!target.classList.contains('rtp-input') && !target.closest('.rtp-search')) {
+            e.preventDefault();
+            calculate(false);
+          }
+        }
+        
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          calculate(false);
+        }
+        
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          clearAll();
+        }
+      });
+
+      google.script.run
+        .withSuccessHandler(onConfigLoaded)
+        .withFailureHandler(err => {
+          toast('Error: ' + err.message, 'error');
+          $('#splash').classList.add('hide');
+        })
+        .getConfig();
+    });
+
+    function onConfigLoaded(data) {
+      if (!data || !data.casino || !data.sport) {
+        toast('Error: Invalid configuration', 'error');
+        $('#splash').classList.add('hide');
+        return;
+      }
+      
+      state.config = data;
+      state.rtpGames = data.rtpGames || []; // ✅ Зберігаємо для фільтрів
+      buildCategoryTabs(data);
+
+      if (data.casino.length) {
+        selectCategory('casino');
+      } else if (data.sport.length) {
+        selectCategory('sport');
+      }
+      
+      $('#app').style.opacity = '1';
+      setTimeout(() => $('#splash').classList.add('hide'), 300);
+    }
+
+    function buildCategoryTabs(data) {
+      const container = $('#categoryTabs');
+      container.innerHTML = '';
+
+      if (data.casino.length) {
+        const tab = el('div', 'category-tab');
+        tab.innerHTML = '🎰 Casino';
+        tab.dataset.category = 'casino';
+        tab.onclick = () => selectCategory('casino');
+        container.appendChild(tab);
+      }
+
+      if (data.sport.length) {
+        const tab = el('div', 'category-tab');
+        tab.innerHTML = '⚽ Sport';
+        tab.dataset.category = 'sport';
+        tab.onclick = () => selectCategory('sport');
+        container.appendChild(tab);
+      }
+    }
+
+    function selectCategory(category) {
+      state.category = category;
+      
+      $$('.category-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.category === category);
+      });
+
+      const calculators = state.config[category] || [];
+      buildCalculatorTabs(calculators);
+
+      if (calculators.length) {
+        const firstCalc = calculators[0];
+        const identifier = firstCalc.isFB ? firstCalc.displayName : firstCalc.sheet;
+        selectCalculator(identifier);
+      }
+    }
+
+    function buildCalculatorTabs(calculators) {
+      const container = $('#calculatorTabs');
+      container.innerHTML = '';
+
+      calculators.forEach(calc => {
+        const tab = el('div', 'calculator-tab');
+        tab.textContent = calc.displayName;
+        
+        if (calc.isFB) {
+          tab.dataset.calc = calc.displayName;
+          tab.onclick = () => selectCalculator(calc.displayName);
+        } else {
+          tab.dataset.calc = calc.sheet;
+          tab.onclick = () => selectCalculator(calc.sheet);
+        }
+        
+        container.appendChild(tab);
+      });
+    }
+
+    function selectCalculator(identifier) {
+      const allCalcs = [...state.config.casino, ...state.config.sport];
+      const calc = allCalcs.find(c => c.sheet === identifier || (c.isFB && c.displayName === identifier));
+      
+      if (!calc) return;
+
+      state.activeCalc = calc;
+      state.selectedRTPGame = null;
+      
+      if (calc.isFB) {
+        state.activeSheet = calc.variants[0].sheet;
+        state.activeFBVariant = calc.variants[0];
+        
+        if (!state.inputs[identifier]) {
+          state.inputs[identifier] = {};
+        }
+        
+        renderFields(calc.variants[0]);
+      } else {
+        state.activeSheet = calc.sheet;
+        state.activeFBVariant = null;
+        
+        if (!state.inputs[calc.sheet]) {
+          state.inputs[calc.sheet] = {};
+        }
+        
+        renderFields(calc);
+      }
+
+      $$('.calculator-tab').forEach(tab => {
+        const tabId = calc.isFB ? calc.displayName : calc.sheet;
+        tab.classList.toggle('active', tab.dataset.calc === tabId);
+      });
+
+      if (calc.isFB) {
+        renderFBVariantTabs(calc);
+      } else {
+        hideFBVariantTabs();
+      }
+
+      $('#warningBox').classList.remove('show');
+      $('#infoBox').classList.remove('show');
+      $('#summaryBox').classList.remove('show');
+    }
+
+    function renderFBVariantTabs(fbCalc) {
+      const container = $('#fbVariantTabs');
+      container.innerHTML = '';
+      container.style.display = 'flex';
+
+      fbCalc.variants.forEach(variant => {
+        const tab = el('div', 'fb-variant-tab');
+        tab.textContent = variant.fbVariant;
+        tab.dataset.sheet = variant.sheet;
+        tab.onclick = () => selectFBVariant(fbCalc, variant);
+        
+        if (variant.sheet === state.activeFBVariant.sheet) {
+          tab.classList.add('active');
+        }
+        
+        container.appendChild(tab);
+      });
+    }
+
+    function hideFBVariantTabs() {
+      $('#fbVariantTabs').style.display = 'none';
+    }
+
+    function selectFBVariant(fbCalc, variant) {
+      state.activeFBVariant = variant;
+      state.activeSheet = variant.sheet;
+
+      $$('.fb-variant-tab').forEach(tab => {
+        tab.classList.toggle('active', tab.dataset.sheet === variant.sheet);
+      });
+
+      renderVariantOutputs(variant);
+    }
+    
+    function renderVariantOutputs(variant) {
+      const outputContainer = $('#outputFields');
+      outputContainer.innerHTML = '';
+
+      const outputFields = variant.fields.filter(f => {
+        const parsed = parseLabel(f.label);
+        return !parsed.info && f.hasFormula;
+      });
+
+      const outputGroups = groupByColor(outputFields);
+      const inputs = state.inputs[state.activeCalc.displayName] || {};
+      
+      renderGroups(outputGroups, outputContainer, inputs, variant);
+    }
+
+    function renderFields(calc) {
+      if (calc.isLootbox) {
+        renderLootboxMode(calc);
+        return;
+      }
+      
+      const inputContainer = $('#inputFields');
+      const outputContainer = $('#outputFields');
+      
+      inputContainer.innerHTML = '';
+      outputContainer.innerHTML = '';
+      
+      // ✅ Додаємо панель фільтрів для FS калькуляторів
+      if (calc.isFS) {
+        const filtersPanel = createRTPFilters();
+        inputContainer.appendChild(filtersPanel);
+      }
+
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : calc.sheet;
+      const inputs = state.inputs[storageKey] || {};
+      const isSport = state.category === 'sport';
+
+      state.maxBonusRate = null;
+      state.expectedBonusInfo = {};
+
+      const inputFields = calc.fields.filter(f => {
+        const parsed = parseLabel(f.label);
+        return !parsed.info && !f.hasFormula;
+      });
+
+      const outputFields = calc.fields.filter(f => {
+        const parsed = parseLabel(f.label);
+        return !parsed.info && f.hasFormula;
+      });
+
+      if (isSport) {
+        inputFields.forEach(field => {
+          if (inputs[field.a1] === undefined && field.value !== null && field.value !== '') {
+            inputs[field.a1] = Number(field.value) || 0;
+          }
+        });
+      }
+      
+      const rtpField = inputFields.find(f => /rtp/i.test(f.label));
+      if (rtpField && inputs[rtpField.a1] && !state.selectedRTPGame && state.config.rtpGames) {
+        const rtpValue = inputs[rtpField.a1] * 100;
+        const matchingGame = state.config.rtpGames.find(g => Math.abs(Number(g.rtpPct) - rtpValue) < 0.01);
+        if (matchingGame) {
+          state.selectedRTPGame = matchingGame;
+        }
+      }
+
+      const inputGroups = groupByColor(inputFields);
+      const outputGroups = groupByColor(outputFields);
+
+      renderGroups(inputGroups, inputContainer, inputs, calc, storageKey);
+      renderGroups(outputGroups, outputContainer, inputs, calc, storageKey);
+      
+      // ✅ Відновлюємо збережені outputs якщо є
+      restoreOutputs(storageKey);
+      
+      // ✅ Відновлюємо info box якщо є
+      const savedInfo = state.expectedBonusInfo[storageKey];
+      if (savedInfo) {
+        showExpectedBonusInfo(savedInfo.bonus, savedInfo.rate);
+      }
+      
+      // ✅ Відновлюємо warning якщо є
+      const savedWarning = state.warningInfo[storageKey];
+      if (savedWarning) {
+        showWarning(savedWarning.current, savedWarning.max);
+      }
+      
+      // ✅ Відновлюємо summary якщо є
+      const savedSummary = state.summaryInfo[storageKey];
+      if (savedSummary) {
+        buildSummary(savedSummary);
+      }
+    }
+
+    function renderLootboxMode(calc) {
+      // Lootbox mode implementation
+    }
+
+    // ✅ Відновлення збережених outputs
+    function restoreOutputs(storageKey) {
+      const savedOutputs = state.outputs[storageKey];
+      if (!savedOutputs || !savedOutputs.result) {
+        return;
+      }
+      
+      const thresholds = state.thresholds[state.activeSheet] || {};
+      
+      // ✅ Беремо fields з конфігурації для cellBgColor
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const fields = isFB ? state.activeFBVariant.fields : state.activeCalc.fields;
+      const fieldsMap = {};
+      fields.forEach(f => {
+        fieldsMap[f.a1] = f;
+      });
+      let expectedBonus = null;
+      let expectedBonusRate = null;
+      const summaryData = [];
+
+      savedOutputs.result.forEach(field => {
+        const parsed = parseLabel(field.label);
+        
+        if (parsed.info && /max.*bonus.*rate/i.test(parsed.clean)) {
+          const maxRateStr = String(field.value).replace('%', '').replace(',', '.').replace(/[^\d\.\-]/g, '').trim();
+          state.maxBonusRate = parseFloat(maxRateStr);
+        }
+        
+        if (parsed.info) return;
+
+        if (/expected.*bonus/i.test(parsed.clean) && !/rate/i.test(parsed.clean)) {
+          expectedBonus = field.value;
+        }
+        if (/expected.*bonus.*rate/i.test(parsed.clean)) {
+          const valueStr = String(field.value).replace('%', '').replace(',', '.').replace(/[^\d\.\-]/g, '').trim();
+          expectedBonusRate = parseFloat(valueStr);
+        }
+
+        summaryData.push({
+          label: parsed.clean,
+          value: field.value,
+          currency: parsed.currency,
+          percent: parsed.percent
+        });
+
+        const output = $('#out__' + cssId(field.a1));
+        if (!output) return;
+        
+        output.value = field.value ?? '';
+
+        // ✅ Застосовуємо підсвітку з Google Sheets (якщо є)
+        const fieldEl = output.closest('.field');
+        const fieldConfig = fieldsMap[field.a1];
+        
+        if (fieldEl && fieldConfig && fieldConfig.cellBgColor) {
+          fieldEl.style.backgroundColor = fieldConfig.cellBgColor;
+          fieldEl.style.border = '2px solid ' + adjustColorBrightness(fieldConfig.cellBgColor, -20);
+          fieldEl.style.padding = '8px';
+          fieldEl.style.borderRadius = '8px';
+        }
+      });
+
+      if (expectedBonus || expectedBonusRate) {
+        showExpectedBonusInfo(expectedBonus, expectedBonusRate);
+      }
+
+      if (expectedBonusRate !== null && !isNaN(expectedBonusRate) && state.maxBonusRate !== null && !isNaN(state.maxBonusRate)) {
+        if (expectedBonusRate > state.maxBonusRate) {
+          showWarning(expectedBonusRate, state.maxBonusRate);
+        }
+      }
+
+      if (summaryData.length > 0) {
+        buildSummary(summaryData);
+      }
+    }
+
+    function groupByColor(fields) {
+      const groups = {};
+      
+      fields.forEach(field => {
+        const key = field.color || 'default';
+        if (!groups[key]) groups[key] = [];
+        groups[key].push(field);
+      });
+
+      return groups;
+    }
+
+    function renderGroups(groups, container, inputs, calc) {
+      Object.keys(groups).forEach(colorKey => {
+        const group = el('div', 'field-group');
+        
+        if (colorKey !== 'default') {
+          group.style.borderLeft = `4px solid ${colorKey}`;
+        }
+        
+        const content = el('div', 'field-group-content');
+        
+        groups[colorKey].forEach(field => {
+          const parsed = parseLabel(field.label);
+          const fieldEl = createFieldElement(field, parsed, inputs, calc);
+          content.appendChild(fieldEl);
+          
+          const hasRTPField = calc.fields && calc.fields.some(f => /rtp/i.test(f.label));
+          const isRTPField = /rtp/i.test(parsed.clean);
+          
+          if ((calc.isFS || hasRTPField) && isRTPField && state.selectedRTPGame && state.selectedRTPGame.betLevels && state.selectedRTPGame.betLevels.length > 0) {
+            const betLevelFieldEl = el('div', 'field');
+            
+            const betLevelLabel = el('div', 'field-label');
+            betLevelLabel.textContent = 'BET LEVEL';
+            betLevelLabel.style.fontWeight = '700';
+            betLevelFieldEl.appendChild(betLevelLabel);
+            
+            const betLevelSelect = el('select', 'inp');
+            betLevelSelect.style.fontWeight = '600';
+            
+            const defaultOpt = el('option');
+            defaultOpt.value = '';
+            defaultOpt.textContent = 'Select BET LEVEL...';
+            betLevelSelect.appendChild(defaultOpt);
+            
+            state.selectedRTPGame.betLevels.forEach(level => {
+              const opt = el('option');
+              opt.value = level.value;
+              opt.textContent = `Level ${level.level}: €${level.value}`;
+              betLevelSelect.appendChild(opt);
+            });
+            
+            const betLevelStorageKey = 'betLevel_' + field.a1;
+            if (inputs[betLevelStorageKey]) {
+              betLevelSelect.value = inputs[betLevelStorageKey];
+              
+              const minBetField = calc.fields.find(f => /min.*bet/i.test(f.label) && !f.hasFormula);
+              if (minBetField) {
+                setTimeout(() => {
+                  const minBetInput = $('#inp__' + cssId(minBetField.a1));
+                  if (minBetInput) {
+                    minBetInput.style.background = 'rgba(139, 92, 246, 0.1)';
+                    minBetInput.style.borderColor = 'rgba(139, 92, 246, 0.5)';
+                  }
+                }, 100);
+              }
+            }
+            
+            betLevelSelect.onchange = () => {
+              if (betLevelSelect.value) {
+                inputs[betLevelStorageKey] = Number(betLevelSelect.value);
+                
+                const minBetField = calc.fields.find(f => /min.*bet/i.test(f.label) && !f.hasFormula);
+                if (minBetField) {
+                  inputs[minBetField.a1] = Number(betLevelSelect.value);
+                  
+                  const minBetInput = $('#inp__' + cssId(minBetField.a1));
+                  if (minBetInput) {
+                    minBetInput.value = betLevelSelect.value;
+                    minBetInput.style.background = 'rgba(139, 92, 246, 0.1)';
+                    minBetInput.style.borderColor = 'rgba(139, 92, 246, 0.5)';
+                  }
+                }
+                
+                setTimeout(() => calculate(false), 100);
+              } else {
+                delete inputs[betLevelStorageKey];
+                
+                const minBetField = calc.fields.find(f => /min.*bet/i.test(f.label) && !f.hasFormula);
+                if (minBetField) {
+                  const minBetInput = $('#inp__' + cssId(minBetField.a1));
+                  if (minBetInput) {
+                    minBetInput.value = '';
+                    delete inputs[minBetField.a1];
+                    minBetInput.style.background = '';
+                    minBetInput.style.borderColor = '';
+                  }
+                }
+              }
+            };
+            
+            betLevelFieldEl.appendChild(betLevelSelect);
+            content.appendChild(betLevelFieldEl);
+          }
+        });
+        
+        group.appendChild(content);
+        container.appendChild(group);
+      });
+    }
+
+    function colToA1(col) {
+      let s = '';
+      for (let c = col; c > 0;) {
+        const m = (c - 1) % 26;
+        s = String.fromCharCode(65 + m) + s;
+        c = Math.floor((c - 1) / 26);
+      }
+      return s;
+    }
+
+    function createFieldElement(field, parsed, inputs, calc) {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      const fieldEl = el('div', 'field');
+
+      const label = el('div', 'field-label');
+      label.textContent = parsed.clean;
+      
+      if (field.bold) {
+        label.classList.add('bold');
+      }
+      
+      // ✅ Іконка info з tooltip при кліку
+      if (field.note) {
+        const labelWrapper = el('div', 'field-label-wrapper');
+        labelWrapper.appendChild(label);
+        
+        const infoIcon = el('div', 'info-icon');
+        infoIcon.innerHTML = 'i';
+        infoIcon.title = 'Click for info';
+        infoIcon.onclick = (e) => {
+          e.stopPropagation();
+          showTooltipPanel(field.note, infoIcon);
+        };
+        
+        labelWrapper.appendChild(infoIcon);
+        fieldEl.appendChild(labelWrapper);
+      } else {
+        fieldEl.appendChild(label);
+      }
+
+      if (field.hasFormula) {
+        const wrap = el('div', 'input-wrap');
+        if (parsed.currency) {
+          wrap.classList.add('has-prefix');
+          const prefix = el('span', 'input-prefix');
+          prefix.textContent = '€';
+          wrap.appendChild(prefix);
+        } else if (parsed.percent) {
+          wrap.classList.add('has-suffix');
+          const suffix = el('span', 'input-suffix');
+          suffix.textContent = '%';
+          wrap.appendChild(suffix);
+        }
+
+        const input = el('input', 'inp readonly');
+        input.readOnly = true;
+        input.id = 'out__' + cssId(field.a1);
+        
+        if (field.bold) {
+          input.classList.add('bold-value');
+        }
+        
+        wrap.appendChild(input);
+        fieldEl.appendChild(wrap);
+
+        // ✅ Застосовуємо підсвітку з Google Sheets (якщо є cellBgColor)
+        if (field.cellBgColor) {
+          fieldEl.style.backgroundColor = field.cellBgColor;
+          fieldEl.style.border = '2px solid ' + adjustColorBrightness(field.cellBgColor, -20);
+          fieldEl.style.padding = '8px';
+          fieldEl.style.borderRadius = '8px';
+        }
+      } else {
+        // ✅ RTP dropdown ТІЛЬКИ якщо це FS калькулятор
+        const isRTPField = /rtp/i.test(parsed.clean);
+        
+        if (calc.isFS && isRTPField) {
+          fieldEl.appendChild(createRTPDropdown(field, inputs));
+        }
+
+        const wrap = el('div', 'input-wrap');
+        if (parsed.currency) {
+          wrap.classList.add('has-prefix');
+          const prefix = el('span', 'input-prefix');
+          prefix.textContent = '€';
+          wrap.appendChild(prefix);
+        } else if (parsed.percent) {
+          wrap.classList.add('has-suffix');
+          const suffix = el('span', 'input-suffix');
+          suffix.textContent = '%';
+          wrap.appendChild(suffix);
+        }
+
+        const input = el('input', 'inp');
+        input.type = 'number';
+        input.step = 'any';
+        
+        if (inputs[field.a1] === undefined && field.value !== null && field.value !== '') {
+          const defVal = Number(field.value);
+          if (!isNaN(defVal)) {
+            inputs[field.a1] = defVal;
+          }
+        }
+        
+        let displayValue = inputs[field.a1] ?? '';
+        if (displayValue !== '' && parsed.percent) {
+          const numVal = Number(displayValue);
+          displayValue = numVal < 1 ? (numVal * 100).toFixed(2) : numVal.toFixed(2);
+        }
+        
+        input.value = displayValue;
+        input.id = 'inp__' + cssId(field.a1);
+        input.placeholder = 'Enter...';
+        
+        if (field.bold) {
+          input.classList.add('bold-value');
+        }
+        
+        input.oninput = () => {
+          let value = Number(input.value);
+          if (isNaN(value) || input.value === '') {
+            delete inputs[field.a1];
+          } else {
+            inputs[field.a1] = normalizePercentValue(value, parsed.percent);
+          }
+        };
+
+        wrap.appendChild(input);
+        fieldEl.appendChild(wrap);
+      }
+
+      return fieldEl;
+    }
+
+    function debounce(func, wait) {
+      let timeout;
+      return function executedFunction(...args) {
+        const later = () => {
+          clearTimeout(timeout);
+          func.apply(this, args);
+        };
+        clearTimeout(timeout);
+        timeout = setTimeout(later, wait);
+      };
+    }
+
+    // ✅ Функція для затемнення/освітлення кольору
+    function adjustColorBrightness(hex, percent) {
+      // Конвертуємо hex в RGB
+      const num = parseInt(hex.replace('#', ''), 16);
+      const r = Math.max(0, Math.min(255, (num >> 16) + percent));
+      const g = Math.max(0, Math.min(255, ((num >> 8) & 0x00FF) + percent));
+      const b = Math.max(0, Math.min(255, (num & 0x0000FF) + percent));
+      return '#' + ((r << 16) | (g << 8) | b).toString(16).padStart(6, '0');
+    }
+
+    // ✅ Показуємо tooltip панель
+    function showTooltipPanel(text, iconElement) {
+      // Видаляємо попередню панель якщо є
+      const existing = $('.tooltip-panel');
+      if (existing) {
+        existing.remove();
+      }
+      
+      // Створюємо панель
+      const panel = el('div', 'tooltip-panel');
+      
+      const closeBtn = el('div', 'tooltip-close');
+      closeBtn.innerHTML = '×';
+      closeBtn.onclick = () => panel.remove();
+      
+      const content = el('div', 'tooltip-content');
+      content.textContent = text;
+      
+      panel.appendChild(closeBtn);
+      panel.appendChild(content);
+      document.body.appendChild(panel);
+      
+      // ✅ Позиціонуємо ВГОРІ іконки
+      const rect = iconElement.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      
+      // Центруємо по горизонталі відносно іконки
+      let left = rect.left + (rect.width / 2) - (panelRect.width / 2) + window.scrollX;
+      
+      // Зберігаємо початкову позицію для стрілочки
+      const originalLeft = left;
+      
+      // Перевіряємо чи не виходить за ліву межу
+      if (left < 10) {
+        left = 10;
+      }
+      
+      // Перевіряємо чи не виходить за праву межу
+      if (left + panelRect.width > window.innerWidth - 10) {
+        left = window.innerWidth - panelRect.width - 10;
+      }
+      
+      // ✅ Розраховуємо позицію стрілочки (відносно зміщення панелі)
+      const arrowOffset = (originalLeft - left) + (panelRect.width / 2);
+      
+      // Показуємо ВГОРІ іконки (з відступом 15px)
+      let top = rect.top - panelRect.height - 15 + window.scrollY;
+      
+      // Якщо не вміщається вгорі - показуємо знизу
+      if (top < window.scrollY + 10) {
+        top = rect.bottom + 15 + window.scrollY;
+        panel.classList.add('tooltip-below'); // ✅ Додаємо клас для стрілочки знизу
+      }
+      
+      panel.style.top = top + 'px';
+      panel.style.left = left + 'px';
+      
+      // ✅ Позиціонуємо стрілочку
+      panel.style.setProperty('--arrow-left', arrowOffset + 'px');
+      
+      // Показуємо з анімацією
+      setTimeout(() => panel.classList.add('show'), 10);
+      
+      // Закриття при кліку поза панеллю
+      setTimeout(() => {
+        document.addEventListener('click', function closePanel(e) {
+          if (!panel.contains(e.target) && e.target !== iconElement) {
+            panel.remove();
+            document.removeEventListener('click', closePanel);
+          }
+        });
+      }, 100);
+    }
+
+    // ✅ Створюємо панель фільтрів для RTP ігор
+    function createRTPFilters() {
+      const panel = el('div', 'rtp-filters-panel');
+      
+      // Кнопка розгортання/згортання
+      const toggleBtn = el('button', 'rtp-filters-toggle');
+      toggleBtn.innerHTML = '<span>🔍</span> Slot Filters <span class="toggle-arrow">▼</span>';
+      toggleBtn.onclick = () => {
+        const content = panel.querySelector('.rtp-filters-content');
+        const arrow = toggleBtn.querySelector('.toggle-arrow');
+        if (content.style.display === 'none') {
+          content.style.display = 'flex';
+          arrow.textContent = '▲';
+        } else {
+          content.style.display = 'none';
+          arrow.textContent = '▼';
+        }
+      };
+      panel.appendChild(toggleBtn);
+      
+      // Контент фільтрів (спочатку схований)
+      const content = el('div', 'rtp-filters-content');
+      content.style.display = 'none';
+      
+      // ✅ Збираємо унікальні значення з ігор
+      const games = state.rtpGames || state.config?.rtpGames || [];
+      const providers = [...new Set(games.map(g => g.provider).filter(Boolean))].sort();
+      const categories = [...new Set(games.map(g => g.category).filter(Boolean))].sort();
+      const volatilities = [...new Set(games.map(g => g.volatility).filter(Boolean))].sort();
+      
+      // ✅ Беремо тільки BET LVL 1
+      const betLevels1 = [...new Set(games.map(g => {
+        const betLevel1 = g.betLevels && g.betLevels.find(b => b.level === '1');
+        return betLevel1 ? betLevel1.value : null;
+      }).filter(Boolean))].sort((a, b) => a - b);
+      
+      // ✅ Верхній рядок з чекбоксами (4 колонки)
+      const topRow = el('div', 'filters-row');
+      
+      // ✅ Provider filter з чекбоксами
+      if (providers.length > 0) {
+        const providerSection = el('div', 'filter-section');
+        const providerLabel = el('label', 'filter-label');
+        providerLabel.textContent = 'Provider:';
+        providerSection.appendChild(providerLabel);
+        
+        const checkboxContainer = el('div', 'filter-checkboxes');
+        
+        providers.forEach(provider => {
+          const item = el('div', 'filter-checkbox-item');
+          
+          const checkbox = el('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = 'prov_' + provider.replace(/\s/g, '_');
+          checkbox.value = provider;
+          checkbox.onchange = () => {
+            state.rtpFilters.providers = Array.from(checkboxContainer.querySelectorAll('input:checked')).map(cb => cb.value);
+            applyRTPFilters();
+          };
+          
+          const label = el('label');
+          label.htmlFor = checkbox.id;
+          label.textContent = provider;
+          
+          item.appendChild(checkbox);
+          item.appendChild(label);
+          checkboxContainer.appendChild(item);
+        });
+        
+        providerSection.appendChild(checkboxContainer);
+        topRow.appendChild(providerSection);
+      }
+      
+      // Category filter з чекбоксами
+      if (categories.length > 0) {
+        const categorySection = el('div', 'filter-section');
+        const categoryLabel = el('label', 'filter-label');
+        categoryLabel.textContent = 'Category:';
+        categorySection.appendChild(categoryLabel);
+        
+        const checkboxContainer = el('div', 'filter-checkboxes');
+        
+        categories.forEach(cat => {
+          const item = el('div', 'filter-checkbox-item');
+          
+          const checkbox = el('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = 'cat_' + cat.replace(/\s/g, '_');
+          checkbox.value = cat;
+          checkbox.onchange = () => {
+            state.rtpFilters.categories = Array.from(checkboxContainer.querySelectorAll('input:checked')).map(cb => cb.value);
+            applyRTPFilters();
+          };
+          
+          const label = el('label');
+          label.htmlFor = checkbox.id;
+          label.textContent = cat;
+          
+          item.appendChild(checkbox);
+          item.appendChild(label);
+          checkboxContainer.appendChild(item);
+        });
+        
+        categorySection.appendChild(checkboxContainer);
+        topRow.appendChild(categorySection);
+      }
+      
+      // Volatility filter з чекбоксами
+      if (volatilities.length > 0) {
+        const volatilitySection = el('div', 'filter-section');
+        const volatilityLabel = el('label', 'filter-label');
+        volatilityLabel.textContent = 'Volatility:';
+        volatilitySection.appendChild(volatilityLabel);
+        
+        const checkboxContainer = el('div', 'filter-checkboxes');
+        
+        volatilities.forEach(vol => {
+          const item = el('div', 'filter-checkbox-item');
+          
+          const checkbox = el('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = 'vol_' + vol.replace(/\s/g, '_');
+          checkbox.value = vol;
+          checkbox.onchange = () => {
+            state.rtpFilters.volatilities = Array.from(checkboxContainer.querySelectorAll('input:checked')).map(cb => cb.value);
+            applyRTPFilters();
+          };
+          
+          const label = el('label');
+          label.htmlFor = checkbox.id;
+          label.textContent = vol;
+          
+          item.appendChild(checkbox);
+          item.appendChild(label);
+          checkboxContainer.appendChild(item);
+        });
+        
+        volatilitySection.appendChild(checkboxContainer);
+        topRow.appendChild(volatilitySection);
+      }
+      
+      // Bet Level 1 filter з чекбоксами
+      if (betLevels1.length > 0) {
+        const betSection = el('div', 'filter-section');
+        const betLabel = el('label', 'filter-label');
+        betLabel.textContent = 'Bet Level 1:';
+        betSection.appendChild(betLabel);
+        
+        const checkboxContainer = el('div', 'filter-checkboxes');
+        
+        betLevels1.forEach(bet => {
+          const item = el('div', 'filter-checkbox-item');
+          
+          const checkbox = el('input');
+          checkbox.type = 'checkbox';
+          checkbox.id = 'bet_' + bet;
+          checkbox.value = bet;
+          checkbox.onchange = () => {
+            state.rtpFilters.betLevels = Array.from(checkboxContainer.querySelectorAll('input:checked')).map(cb => Number(cb.value));
+            applyRTPFilters();
+          };
+          
+          const label = el('label');
+          label.htmlFor = checkbox.id;
+          label.textContent = bet;
+          
+          item.appendChild(checkbox);
+          item.appendChild(label);
+          checkboxContainer.appendChild(item);
+        });
+        
+        betSection.appendChild(checkboxContainer);
+        topRow.appendChild(betSection);
+      }
+      
+      // ✅ Додаємо topRow в content
+      content.appendChild(topRow);
+      
+      // ✅ Нижній рядок з RTP Range і Clear
+      const bottomRow = el('div', 'filters-bottom-row');
+      
+      // RTP Range slider
+      const rtpSection = el('div', 'filter-section rtp-range-section');
+      const rtpLabel = el('label', 'filter-label');
+      rtpLabel.textContent = 'RTP Range:';
+      rtpSection.appendChild(rtpLabel);
+      
+      const rtpSliderContainer = el('div', 'rtp-slider-container');
+      
+      const rtpMinInput = el('input');
+      rtpMinInput.type = 'number';
+      rtpMinInput.min = '90';
+      rtpMinInput.max = '100';
+      rtpMinInput.step = '0.1';
+      rtpMinInput.value = '90';
+      rtpMinInput.className = 'rtp-range-input';
+      rtpMinInput.placeholder = 'Min';
+      
+      const rtpMaxInput = el('input');
+      rtpMaxInput.type = 'number';
+      rtpMaxInput.min = '90';
+      rtpMaxInput.max = '100';
+      rtpMaxInput.step = '0.1';
+      rtpMaxInput.value = '100';
+      rtpMaxInput.className = 'rtp-range-input';
+      rtpMaxInput.placeholder = 'Max';
+      
+      const rtpDisplay = el('div', 'rtp-range-display');
+      rtpDisplay.textContent = '90% - 100%';
+      
+      rtpMinInput.oninput = () => {
+        const min = parseFloat(rtpMinInput.value);
+        const max = parseFloat(rtpMaxInput.value);
+        if (min > max) {
+          rtpMinInput.value = max;
+        }
+        state.rtpFilters.rtpRange = [parseFloat(rtpMinInput.value), max];
+        rtpDisplay.textContent = `${rtpMinInput.value}% - ${rtpMaxInput.value}%`;
+        applyRTPFilters();
+      };
+      
+      rtpMaxInput.oninput = () => {
+        const min = parseFloat(rtpMinInput.value);
+        const max = parseFloat(rtpMaxInput.value);
+        if (max < min) {
+          rtpMaxInput.value = min;
+        }
+        state.rtpFilters.rtpRange = [min, parseFloat(rtpMaxInput.value)];
+        rtpDisplay.textContent = `${rtpMinInput.value}% - ${rtpMaxInput.value}%`;
+        applyRTPFilters();
+      };
+      
+      rtpSliderContainer.appendChild(rtpMinInput);
+      const separator = el('span', 'rtp-range-separator');
+      separator.textContent = '-';
+      rtpSliderContainer.appendChild(separator);
+      rtpSliderContainer.appendChild(rtpMaxInput);
+      
+      rtpSection.appendChild(rtpSliderContainer);
+      rtpSection.appendChild(rtpDisplay);
+      bottomRow.appendChild(rtpSection);
+      
+      // Clear filters button
+      const clearBtn = el('button', 'rtp-filters-clear');
+      clearBtn.textContent = '✖ Clear Filters';
+      clearBtn.onclick = () => {
+        // Reset state
+        state.rtpFilters = {
+          providers: [],
+          categories: [],
+          volatilities: [],
+          betLevels: [],
+          rtpRange: [90, 100]
+        };
+        
+        // Reset UI - uncheck all checkboxes
+        content.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+          cb.checked = false;
+        });
+        
+        // Reset multiselect dropdown
+        content.querySelectorAll('.filter-multiselect-dropdown').forEach(select => {
+          Array.from(select.options).forEach(opt => opt.selected = false);
+        });
+        
+        rtpMinInput.value = '90';
+        rtpMaxInput.value = '100';
+        rtpDisplay.textContent = '90% - 100%';
+        
+        applyRTPFilters();
+      };
+      bottomRow.appendChild(clearBtn);
+      
+      // ✅ Додаємо bottomRow в content
+      content.appendChild(bottomRow);
+      
+      panel.appendChild(content);
+      return panel;
+    }
+
+    // ✅ Застосовуємо фільтри до RTP ігор
+    function applyRTPFilters() {
+      // Оновлюємо список в RTP dropdown якщо він відкритий
+      if (state.lastRTPList && state.lastRTPInput) {
+        const query = state.lastRTPInput.value || '';
+        // Викликаємо updateRTPList яка знаходиться в createRTPDropdown
+        if (state.lastRTPList.style.display === 'block') {
+          // Знаходимо updateRTPList в замиканні через подію input
+          state.lastRTPInput.dispatchEvent(new Event('input'));
+        }
+      }
+    }
+
+    function createRTPDropdown(field, inputs) {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      const container = el('div', 'rtp-search');
+      
+      const searchIcon = el('span', 'rtp-search-icon');
+      searchIcon.textContent = '🔍';
+      container.appendChild(searchIcon);
+
+      const input = el('input', 'rtp-input');
+      input.type = 'search';
+      input.placeholder = 'Search game...';
+      input.autocomplete = 'off';
+      container.appendChild(input);
+
+      const list = el('div', 'rtp-list');
+      list.style.display = 'none';
+      container.appendChild(list);
+
+      const chosen = el('div', 'rtp-chosen');
+      chosen.style.display = 'none';
+      container.appendChild(chosen);
+      
+      if (state.selectedRTPGame) {
+        chosen.innerHTML = '';
+        const gameText = el('span');
+        let displayText = `${state.selectedRTPGame.provider} — ${state.selectedRTPGame.slot}`;
+        if (state.selectedRTPGame.volatility) {
+          displayText += ` • ${state.selectedRTPGame.volatility}`;
+        }
+        gameText.textContent = displayText;
+        chosen.appendChild(gameText);
+        
+        const clearBtn = el('button', 'rtp-clear');
+        clearBtn.textContent = '×';
+        clearBtn.onclick = (e) => {
+          e.stopPropagation();
+          delete inputs[field.a1];
+          chosen.style.display = 'none';
+          state.selectedRTPGame = null;
+          
+          const betLevelStorageKey = 'betLevel_' + field.a1;
+          delete inputs[betLevelStorageKey];
+          
+          const minBetField = state.activeCalc?.fields.find(f => /min.*bet/i.test(f.label) && !f.hasFormula);
+          if (minBetField) {
+            const minBetInput = $('#inp__' + cssId(minBetField.a1));
+            if (minBetInput) {
+              minBetInput.style.background = '';
+              minBetInput.style.borderColor = '';
+            }
+          }
+          
+          const manualInput = $('#inp__' + cssId(field.a1));
+          if (manualInput) manualInput.value = '';
+          
+          setTimeout(() => {
+            renderFields(state.activeCalc);
+          }, 100);
+        };
+        chosen.appendChild(clearBtn);
+        chosen.style.display = 'inline-flex';
+      }
+
+      input.addEventListener('focus', () => {
+        state.lastRTPList = list; // ✅ Зберігаємо для applyRTPFilters
+        state.lastRTPInput = input;
+        updateRTPList(list, '');
+        list.style.display = 'block';
+      });
+
+      input.addEventListener('input', () => {
+        updateRTPList(list, input.value);
+        list.style.display = 'block';
+      });
+
+      document.addEventListener('click', e => {
+        if (!container.contains(e.target)) {
+          list.style.display = 'none';
+        }
+      });
+
+      function updateRTPList(list, query) {
+        list.innerHTML = '';
+        const lowQuery = query.toLowerCase();
+        
+        // ✅ Застосовуємо фільтри
+        let games = (state.config.rtpGames || [])
+          .filter(game => {
+            // Текстовий пошук
+            if (lowQuery && !((game.provider && game.provider.toLowerCase().includes(lowQuery)) ||
+                              (game.slot && game.slot.toLowerCase().includes(lowQuery)))) {
+              return false;
+            }
+            
+            // Provider filter
+            if (state.rtpFilters.providers.length > 0) {
+              if (!game.provider || !state.rtpFilters.providers.includes(game.provider)) {
+                return false;
+              }
+            }
+            
+            // Category filter
+            if (state.rtpFilters.categories.length > 0) {
+              if (!game.category || !state.rtpFilters.categories.includes(game.category)) {
+                return false;
+              }
+            }
+            
+            // Volatility filter
+            if (state.rtpFilters.volatilities.length > 0) {
+              if (!game.volatility || !state.rtpFilters.volatilities.includes(game.volatility)) {
+                return false;
+              }
+            }
+            
+            // Bet Level 1 filter
+            if (state.rtpFilters.betLevels.length > 0) {
+              const betLevel1 = game.betLevels && game.betLevels.find(b => b.level === '1');
+              if (!betLevel1 || !state.rtpFilters.betLevels.includes(betLevel1.value)) {
+                return false;
+              }
+            }
+            
+            // RTP Range filter
+            const gameRTP = parseFloat(game.rtpPct);
+            if (gameRTP < state.rtpFilters.rtpRange[0] || gameRTP > state.rtpFilters.rtpRange[1]) {
+              return false;
+            }
+            
+            return true;
+          })
+          .slice(0, 100);
+
+        games.forEach(game => {
+          const item = el('div', 'rtp-item');
+          
+          let displayText = `${game.provider} — ${game.slot} (${game.rtpPct}%)`;
+          if (game.volatility) {
+            displayText += ` • ${game.volatility}`;
+          }
+          
+          item.textContent = displayText;
+          
+          item.onmousedown = e => {
+            e.preventDefault();
+            
+            state.selectedRTPGame = game;
+            inputs[field.a1] = Number(game.rtpPct) / 100;
+            
+            chosen.innerHTML = '';
+            const gameText = el('span');
+            let displayText = `${game.provider} — ${game.slot}`;
+            if (game.volatility) {
+              displayText += ` • ${game.volatility}`;
+            }
+            gameText.textContent = displayText;
+            chosen.appendChild(gameText);
+            
+            const clearBtn = el('button', 'rtp-clear');
+            clearBtn.textContent = '×';
+            clearBtn.onclick = (e) => {
+              e.stopPropagation();
+              delete inputs[field.a1];
+              chosen.style.display = 'none';
+              state.selectedRTPGame = null;
+              
+              const betLevelStorageKey = 'betLevel_' + field.a1;
+              delete inputs[betLevelStorageKey];
+              
+              const minBetField = state.activeCalc?.fields.find(f => /min.*bet/i.test(f.label) && !f.hasFormula);
+              if (minBetField) {
+                const minBetInput = $('#inp__' + cssId(minBetField.a1));
+                if (minBetInput) {
+                  minBetInput.style.background = '';
+                  minBetInput.style.borderColor = '';
+                }
+              }
+              
+              const manualInput = $('#inp__' + cssId(field.a1));
+              if (manualInput) manualInput.value = '';
+              
+              setTimeout(() => {
+                renderFields(state.activeCalc);
+              }, 100);
+            };
+            chosen.appendChild(clearBtn);
+            
+            chosen.style.display = 'inline-flex';
+            list.style.display = 'none';
+            input.value = '';
+
+            const manualInput = $('#inp__' + cssId(field.a1));
+            if (manualInput) manualInput.value = game.rtpPct;
+            
+            setTimeout(() => {
+              renderFields(state.activeCalc);
+            }, 100);
+          };
+
+          list.appendChild(item);
+        });
+      }
+
+      return container;
+    }
+
+    function calculate(auto = false) {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      const hasInputs = Object.keys(state.inputs[storageKey] || {}).length > 0;
+      
+      if (auto && !hasInputs) {
+        return;
+      }
+
+      if (!auto) {
+        const btn = $('#calcBtn');
+        btn.textContent = '⏳ Calculating...';
+        btn.disabled = true;
+        btn.style.opacity = '0.6';
+      }
+
+      // Підготовка даних
+      const inputs = state.inputs[storageKey] || {};
+      const cleanInputs = {};
+      Object.keys(inputs).forEach(key => {
+        if (!key.startsWith('betLevel_')) {
+          cleanInputs[key] = inputs[key];
+        }
+      });
+
+      google.script.run
+        .withSuccessHandler(result => {
+          
+          // ✅ Зберігаємо outputs для цього калькулятора
+          if (!state.outputs[storageKey]) {
+            state.outputs[storageKey] = {};
+          }
+          state.outputs[storageKey] = result;
+          if (!auto) {
+            const btn = $('#calcBtn');
+            btn.textContent = '⚡ Calculate';
+            btn.disabled = false;
+            btn.style.opacity = '1';
+          }
+          
+          const thresholds = state.thresholds[state.activeSheet] || {};
+
+          let expectedBonus = null;
+          let expectedBonusRate = null;
+          const summaryData = [];
+
+          (result.result || []).forEach(field => {
+            const parsed = parseLabel(field.label);
+            
+            if (parsed.info && /max.*bonus.*rate/i.test(parsed.clean)) {
+              const maxRateStr = String(field.value).replace('%', '').replace(',', '.').replace(/[^\d\.\-]/g, '').trim();
+              state.maxBonusRate = parseFloat(maxRateStr);
+            }
+            
+            if (parsed.info) return;
+
+            if (/expected.*bonus/i.test(parsed.clean) && !/rate/i.test(parsed.clean)) {
+              expectedBonus = field.value;
+            }
+            if (/expected.*bonus.*rate/i.test(parsed.clean)) {
+              const valueStr = String(field.value).replace('%', '').replace(',', '.').replace(/[^\d\.\-]/g, '').trim();
+              expectedBonusRate = parseFloat(valueStr);
+            }
+
+            summaryData.push({
+              label: parsed.clean,
+              value: field.value,
+              currency: parsed.currency,
+              percent: parsed.percent
+            });
+
+            const output = $('#out__' + cssId(field.a1));
+            if (!output) return;
+            
+            output.value = field.value ?? '';
+
+            // ✅ Застосовуємо підсвітку з Google Sheets (якщо є cellBgColor)
+            const fieldEl = output.closest('.field');
+            if (fieldEl && field.cellBgColor) {
+              fieldEl.style.backgroundColor = field.cellBgColor;
+              fieldEl.style.border = '2px solid ' + adjustColorBrightness(field.cellBgColor, -20);
+              fieldEl.style.padding = '8px';
+              fieldEl.style.borderRadius = '8px';
+            }
+          });
+
+          if (expectedBonus || expectedBonusRate) {
+            showExpectedBonusInfo(expectedBonus, expectedBonusRate);
+          }
+
+          if (expectedBonusRate !== null && !isNaN(expectedBonusRate) && state.maxBonusRate !== null && !isNaN(state.maxBonusRate)) {
+            if (expectedBonusRate > state.maxBonusRate) {
+              showWarning(expectedBonusRate, state.maxBonusRate);
+            } else {
+              $('#warningBox').classList.remove('show');
+            }
+          } else {
+            $('#warningBox').classList.remove('show');
+          }
+
+          if (summaryData.length > 0) {
+            buildSummary(summaryData);
+          }
+
+          if (!auto) {
+            toast('✅ Calculated!', 'success');
+          }
+        })
+        .withFailureHandler(err => {
+          if (!auto) {
+            const btn = $('#calcBtn');
+            btn.textContent = '⚡ Calculate';
+            btn.disabled = false;
+          }
+          
+          if (!auto) {
+            toast('Error: ' + err.message, 'error');
+          }
+        })
+        .compute(state.activeSheet, cleanInputs);
+    }
+
+    function showExpectedBonusInfo(bonus, rate) {
+      const infoBox = $('#infoBox');
+      infoBox.innerHTML = '';
+
+      // ✅ Зберігаємо в state
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      if (!state.expectedBonusInfo[storageKey]) {
+        state.expectedBonusInfo[storageKey] = {};
+      }
+      state.expectedBonusInfo[storageKey] = { bonus, rate };
+
+      if (bonus) {
+        const row = el('div', 'info-row');
+        const label = el('div', 'info-label');
+        label.textContent = 'Expected Bonus';
+        const value = el('div', 'info-value');
+        
+        const bonusStr = String(bonus).trim();
+        value.textContent = bonusStr.includes('€') ? bonusStr : '€' + bonusStr;
+        
+        row.appendChild(label);
+        row.appendChild(value);
+        infoBox.appendChild(row);
+      }
+
+      if (rate !== null && !isNaN(rate)) {
+        const row = el('div', 'info-row');
+        const label = el('div', 'info-label');
+        label.textContent = 'Expected Bonus Rate';
+        const value = el('div', 'info-value');
+        value.textContent = rate + '%';
+        row.appendChild(label);
+        row.appendChild(value);
+        infoBox.appendChild(row);
+      }
+
+      if (bonus || (rate !== null && !isNaN(rate))) {
+        infoBox.classList.add('show');
+      }
+    }
+
+    function showWarning(current, max) {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      // ✅ Зберігаємо warning
+      state.warningInfo[storageKey] = { current, max };
+      
+      const warningBox = $('#warningBox');
+      const warningText = $('#warningText');
+      warningText.textContent = `Expected Bonus Rate (${current}%) exceeds maximum allowed rate (${max}%)!`;
+      warningBox.classList.add('show');
+    }
+
+    function buildSummary(data) {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      // ✅ Зберігаємо summary data
+      state.summaryInfo[storageKey] = data;
+      
+      const container = $('#summaryContent');
+      container.innerHTML = '';
+      
+      const email = $('#emailInput').value.trim();
+      if (email) {
+        const emailLine = el('div', 'summary-line');
+        emailLine.style.borderBottom = '1px solid var(--border)';
+        emailLine.style.paddingBottom = '8px';
+        emailLine.style.marginBottom = '8px';
+        
+        const label = el('span', 'summary-line-label');
+        label.textContent = '📧 Player Email:';
+        
+        const value = el('span', 'summary-line-value');
+        value.textContent = email;
+        value.style.fontWeight = '700';
+        value.style.color = 'var(--accent-secondary)';
+        
+        emailLine.appendChild(label);
+        emailLine.appendChild(value);
+        container.appendChild(emailLine);
+      }
+
+      data.forEach(item => {
+        const line = el('div', 'summary-line');
+        const label = el('span', 'summary-line-label');
+        label.textContent = item.label + ':';
+        const value = el('span', 'summary-line-value');
+        
+        let formattedValue = String(item.value || '');
+        
+        if (item.currency && formattedValue && !formattedValue.includes('€')) {
+          formattedValue = '€' + formattedValue;
+        }
+        
+        if (item.percent && formattedValue && !formattedValue.includes('%')) {
+          formattedValue = formattedValue + '%';
+        }
+        
+        value.textContent = formattedValue;
+        line.appendChild(label);
+        line.appendChild(value);
+        container.appendChild(line);
+      });
+
+      $('#summaryBox').classList.add('show');
+    }
+
+    function copySummary() {
+      const lines = [];
+      $$('#summaryContent .summary-line').forEach(line => {
+        const label = line.querySelector('.summary-line-label').textContent;
+        const value = line.querySelector('.summary-line-value').textContent;
+        lines.push(`${label} ${value}`);
+      });
+
+      const text = lines.join('\n');
+      
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(text)
+          .then(() => toast('📋 Copied!', 'success'))
+          .catch(() => fallbackCopy(text));
+      } else {
+        fallbackCopy(text);
+      }
+    }
+
+    function fallbackCopy(text) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      
+      try {
+        document.execCommand('copy');
+        toast('📋 Copied!', 'success');
+      } catch (err) {
+        toast('Failed to copy', 'error');
+      }
+      
+      document.body.removeChild(textarea);
+    }
+
+    function clearAll() {
+      const isFB = state.activeCalc && state.activeCalc.isFB;
+      const storageKey = isFB ? state.activeCalc.displayName : state.activeSheet;
+      
+      // ✅ Збираємо ВСІ input поля
+      const allInputFields = [];
+      if (state.activeCalc) {
+        const fields = isFB ? state.activeFBVariant.fields : state.activeCalc.fields;
+        fields.forEach(field => {
+          const parsed = parseLabel(field.label);
+          if (!parsed.info && !field.hasFormula && field.a1) {
+            allInputFields.push(field.a1);
+          }
+        });
+      }
+      
+      // ✅ Показуємо loading
+      const btn = $('#calcBtn');
+      const originalText = btn.textContent;
+      btn.textContent = '⏳ Clearing...';
+      btn.disabled = true;
+      
+      // ✅ КРИТИЧНО: Ставимо нулі в Google Sheet
+      if (state.activeSheet && allInputFields.length > 0) {
+        google.script.run
+          .withSuccessHandler(() => {
+            btn.textContent = originalText;
+            btn.disabled = false;
+            toast('🗑️ Cleared!', 'success');
+          })
+          .withFailureHandler((err) => {
+            console.error('❌ Error setting zeros:', err);
+            btn.textContent = originalText;
+            btn.disabled = false;
+            toast('Error clearing: ' + err.message, 'error');
+          })
+          .setZerosInSheet(state.activeSheet, allInputFields);
+      } else {
+        btn.textContent = originalText;
+        btn.disabled = false;
+      }
+      
+      // ✅ КРИТИЧНО: Не замінюємо об'єкт, а очищаємо властивості (щоб input.oninput handlers працювали)
+      if (!state.inputs[storageKey]) {
+        state.inputs[storageKey] = {};
+      }
+      // Очищаємо всі властивості
+      Object.keys(state.inputs[storageKey]).forEach(key => {
+        delete state.inputs[storageKey][key];
+      });
+      
+      // ✅ Очищаємо збережені outputs
+      if (state.outputs[storageKey]) {
+        delete state.outputs[storageKey];
+      }
+      
+      // ✅ Очищаємо expectedBonusInfo
+      if (state.expectedBonusInfo[storageKey]) {
+        delete state.expectedBonusInfo[storageKey];
+      }
+      
+      // ✅ Очищаємо warning
+      if (state.warningInfo[storageKey]) {
+        delete state.warningInfo[storageKey];
+      }
+      
+      // ✅ Очищаємо summary
+      if (state.summaryInfo[storageKey]) {
+        delete state.summaryInfo[storageKey];
+      }
+      
+      state.selectedRTPGame = null;
+      
+      $$('#inputFields .inp').forEach(input => {
+        input.value = '';
+        input.disabled = false;
+        input.style.opacity = '1';
+        input.style.background = '';
+        input.style.borderColor = '';
+      });
+      
+      $$('#outputFields .inp').forEach(input => {
+        input.value = '';
+      });
+
+      $$('.field').forEach(field => {
+        // ✅ Очищаємо inline стилі замість класів
+        field.style.backgroundColor = '';
+        field.style.border = '';
+        field.style.padding = '';
+        field.style.borderRadius = '';
+      });
+
+      $('#warningBox').classList.remove('show');
+      $('#infoBox').classList.remove('show');
+      $('#summaryBox').classList.remove('show');
+    }
+
+    function cssId(str) {
+      return String(str || '').replace(/[^a-z0-9]+/gi, '_');
+    }
+  </script>
+</body>
+</html>
