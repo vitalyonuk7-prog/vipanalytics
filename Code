@@ -37,7 +37,7 @@ function doGet(e) {
 
 /******************** TYPE MAPPING ********************/
 function getTypeMapping() {
-  var result = { tagToType: {}, typeMapping: {} };
+  var result = { tagToType: {}, typeMapping: {}, typeToTotal: {}, totalGroups: {} };
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     // Try both "TYPE" and "[TYPE]" sheet names
@@ -47,6 +47,7 @@ function getTypeMapping() {
       for (var i = 1; i < data.length; i++) {
         var typeName = String(data[i][0] || '').trim();
         var tagsRaw = String(data[i][1] || '').trim();
+        var totalGroup = String(data[i][2] || '').trim();
         if (!typeName || !tagsRaw) continue;
         
         // Parse tags - can be JSON array or single tag
@@ -66,9 +67,18 @@ function getTypeMapping() {
             result.typeMapping[typeName].push(t);
           }
         });
+        
+        // TOTAL group mapping
+        if (totalGroup) {
+          result.typeToTotal[typeName] = totalGroup;
+          if (!result.totalGroups[totalGroup]) result.totalGroups[totalGroup] = [];
+          if (result.totalGroups[totalGroup].indexOf(typeName) === -1) {
+            result.totalGroups[totalGroup].push(typeName);
+          }
+        }
       }
     }
-    Logger.log('TYPE mapping loaded: ' + Object.keys(result.tagToType).length + ' tags → ' + Object.keys(result.typeMapping).length + ' types');
+    Logger.log('TYPE mapping loaded: ' + Object.keys(result.tagToType).length + ' tags → ' + Object.keys(result.typeMapping).length + ' types, ' + Object.keys(result.totalGroups).length + ' total groups');
   } catch (e) {
     Logger.log('Error loading TYPE mapping: ' + e);
   }
@@ -4235,4 +4245,60 @@ function initPromoPlanSheet() {
   sheet.getRange(2, 3, 200, 1).setDataValidation(typeRule);
   
   Logger.log('PROMO_PLAN sheet created with ' + holidays.length + ' events');
+}
+
+// ==========================================
+// BONUS REPORT
+// ==========================================
+function getBonusReportData(sheetName) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName(sheetName);
+    if (!sheet) return { error: 'Sheet "' + sheetName + '" not found' };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { error: 'No data in sheet' };
+    
+    var headers = data[0].map(function(h) { return String(h).trim(); });
+    var colMap = {};
+    headers.forEach(function(h, i) { colMap[h] = i; });
+    
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      var period = row[colMap['Period']] || '';
+      var type = row[colMap['Type']] || '';
+      var title = row[colMap['Title']] || '';
+      
+      if (!period && !type && !title) continue;
+      if (String(title).indexOf('Strategy total') === 0) continue;
+      if (String(title).indexOf('Aggregated') === 0) continue;
+      if (!type) continue;
+      
+      rows.push({
+        period: String(period),
+        type: String(type),
+        title: String(title),
+        currency: String(row[colMap['Currency']] || ''),
+        amountIssued: Number(row[colMap['Amount issued']] || 0),
+        countIssued: Number(row[colMap['Count of issued']] || 0),
+        amountCancelled: Number(row[colMap['Amount cancelled']] || 0),
+        countCancelled: Number(row[colMap['Count of cancelled']] || 0),
+        countWagerDone: Number(row[colMap['Count if wager done']] || 0),
+        amountRejected: Number(row[colMap['Amount rejected']] || 0),
+        depositEUR: Number(row[colMap['Deposit sum in EUR']] || 0),
+        betsEUR: Number(row[colMap['Bets sum in EUR']] || 0),
+        winEUR: Number(row[colMap['Win sum in EUR']] || 0),
+        wagerDoneAmount: Number(row[colMap['Amount Wager Done']] || 0),
+        wagerDoneEUR: Number(row[colMap['Amount Wager Done in EUR']] || 0),
+        total: Number(row[colMap['Total']] || 0),
+        totalInEUR: Number(row[colMap['Total in EUR']] || 0),
+        countActive: Number(row[colMap['Count of active']] || 0)
+      });
+    }
+    
+    return { rows: rows };
+  } catch (e) {
+    return { error: e.message };
+  }
 }
