@@ -35,6 +35,31 @@ function doGet(e) {
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
 }
 
+function checkAccess() {
+  try {
+    var email = Session.getActiveUser().getEmail().toLowerCase().trim();
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { allowed: true, role: 'admin', email: email }; // no ACCESS sheet = no restrictions
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { allowed: false, email: email };
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = headers.indexOf('email');
+    var roleCol = headers.indexOf('role');
+    if (emailCol === -1) return { allowed: true, role: 'admin', email: email };
+    for (var i = 1; i < data.length; i++) {
+      var rowEmail = String(data[i][emailCol] || '').toLowerCase().trim();
+      if (rowEmail === email) {
+        var role = roleCol >= 0 ? String(data[i][roleCol] || 'user').toLowerCase().trim() : 'user';
+        return { allowed: true, role: role, email: email };
+      }
+    }
+    return { allowed: false, email: email };
+  } catch(e) {
+    return { allowed: true, role: 'user', email: '', error: e.message };
+  }
+}
+
 /******************** TYPE MAPPING ********************/
 function getTypeMapping() {
   var result = { tagToType: {}, typeMapping: {}, typeToTotal: {}, totalGroups: {} };
@@ -1032,51 +1057,161 @@ function getRetentionData() {
   return result;
 }
 
-function getDepositConversionData() {
+function getRetentionMoMData() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheets = ss.getSheets();
   
-  var ftdSheets = [];
   var activeSheets = [];
-  
-  // Weekly pattern: DD.MM - DD.MM
   var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
   
   sheets.forEach(function(sheet) {
     var name = sheet.getName();
-    
-    // Skip weekly sheets - only process monthly
-    if (weekPattern.test(name)) {
-      return; // Skip this sheet
-    }
-    
-    if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
-      ftdSheets.push(sheet);
-    } else if (name.indexOf('ACTIVE') !== -1) {
+    if (weekPattern.test(name)) return;
+    if (name.indexOf('ACTIVE') !== -1) {
       activeSheets.push(sheet);
     }
   });
   
-  activeSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
+  activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   
-  var allActiveData = [];
+  Logger.log('=== getRetentionMoMData ===');
+  Logger.log('ACTIVE sheets: ' + activeSheets.map(function(s) { return s.getName(); }).join(', '));
+  
+  // Load all active sheet data
+  var allActive = [];
   activeSheets.forEach(function(sheet) {
-    allActiveData.push({
-      name: sheet.getName(),
-      data: getSheetData(sheet)
-    });
+    var monthName = extractMonthName(sheet.getName());
+    var data = getSheetData(sheet);
+    var idSet = {};
+    data.forEach(function(p) { idSet[p.id] = true; });
+    allActive.push({ month: monthName, ids: idSet, count: data.length });
   });
   
-  Logger.log('Loaded ' + allActiveData.length + ' ACTIVE sheets');
+  var result = { months: [], rows: [] };
+  
+  allActive.forEach(function(a) {
+    result.months.push(a.month);
+  });
+  
+  // For each active month (cohort), check retention in subsequent active months
+  allActive.forEach(function(cohort, cohortIdx) {
+    var cohortIds = Object.keys(cohort.ids);
+    var row = { month: cohort.month, ftdCount: cohort.count, retention: [] };
+    
+    for (var i = cohortIdx; i < allActive.length; i++) {
+      var targetActive = allActive[i];
+      var retainedCount = 0;
+      cohortIds.forEach(function(id) {
+        if (targetActive.ids[id]) retainedCount++;
+      });
+      
+      row.retention.push({
+        count: retainedCount,
+        pct: cohort.count > 0 ? retainedCount / cohort.count : 0
+      });
+    }
+    
+    result.rows.push(row);
+  });
+  
+  Logger.log('MoM result: ' + result.rows.length + ' cohorts, ' + result.months.length + ' months');
+  return result;
+}
+
+function getWeeklyRetentionMoMData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  var activeSheets = [];
+  
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    if (weekPattern.test(name) && name.indexOf('ACTIVE') !== -1) {
+      activeSheets.push(sheet);
+    }
+  });
+  
+  activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
+  
+  Logger.log('=== getWeeklyRetentionMoMData ===');
+  Logger.log('Weekly ACTIVE sheets: ' + activeSheets.length);
+  
+  var allActive = [];
+  activeSheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    var weekName = name.replace(/\s*ACTIVE\s*/i, '').trim();
+    var data = getSheetData(sheet);
+    var idSet = {};
+    data.forEach(function(p) { idSet[p.id] = true; });
+    allActive.push({ week: weekName, ids: idSet, count: data.length });
+  });
+  
+  var result = { weeks: [], rows: [] };
+  
+  allActive.forEach(function(a) {
+    result.weeks.push(a.week);
+  });
+  
+  allActive.forEach(function(cohort, cohortIdx) {
+    var cohortIds = Object.keys(cohort.ids);
+    var row = { week: cohort.week, ftdCount: cohort.count, retention: [] };
+    
+    for (var i = 0; i < allActive.length; i++) {
+      if (i < cohortIdx) {
+        row.retention.push({ count: 0, pct: 0 });
+      } else {
+        var targetActive = allActive[i];
+        var retainedCount = 0;
+        cohortIds.forEach(function(id) {
+          if (targetActive.ids[id]) retainedCount++;
+        });
+        row.retention.push({
+          count: retainedCount,
+          pct: cohort.count > 0 ? retainedCount / cohort.count : 0
+        });
+      }
+    }
+    
+    result.rows.push(row);
+  });
+  
+  return result;
+}
+
+function getDepositConversionData() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheets = ss.getSheets();
+  
+  // Load GENERAL DASHBOARD for deposit counts
+  var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+  if (!gdSheet) {
+    return { error: 'Sheet "GENERAL DASHBOARD" not found' };
+  }
+  
+  var gdData = getSheetData(gdSheet);
+  // Build lookup map: id → depositCount
+  var gdMap = {};
+  gdData.forEach(function(p) { gdMap[p.id] = p.depositCount; });
+  Logger.log('GENERAL DASHBOARD loaded: ' + gdData.length + ' players');
+  
+  var ftdSheets = [];
+  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
+  
+  sheets.forEach(function(sheet) {
+    var name = sheet.getName();
+    if (weekPattern.test(name)) return;
+    if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
+      ftdSheets.push(sheet);
+    }
+  });
   
   ftdSheets.sort(function(a, b) {
     return sheets.indexOf(a) - sheets.indexOf(b);
   });
   
   var depositRanges = ['FTD','2+','3+','4+','5+','6+','7+','8+','9+','10+',
-    '11-15','16-20','21-25','26-30','31-40','41-50','50+'];
+    '11+','16+','21+','26+','31+','41+','50+'];
   
   var data = {months: [], rows: []};
   depositRanges.forEach(function(range) {
@@ -1093,51 +1228,14 @@ function getDepositConversionData() {
     
     data.rows[0].cells.push({count: ftdCount, total: ftdCount, pct: 1.0});
     
-    if (allActiveData.length > 0) {
-      for (var i = 1; i < depositRanges.length; i++) {
-        var range = depositRanges[i];
-        var parsed = parseDepositRange(range);
-        var min = parsed.min;
-        var max = parsed.max;
-        
-        var count = 0;
-        
-        for (var j = 0; j < ftdData.length; j++) {
-          var ftdPlayerId = ftdData[j].id;
-          var found = false;
-          
-          for (var k = 0; k < allActiveData.length && !found; k++) {
-            var activeSheet = allActiveData[k];
-            
-            for (var m = 0; m < activeSheet.data.length; m++) {
-              var player = activeSheet.data[m];
-              
-              if (player.id === ftdPlayerId) {
-                var deposits = player.depositCount;
-                var inRange = false;
-                
-                if (max === null) {
-                  inRange = (deposits >= min);
-                } else {
-                  inRange = (deposits >= min && deposits <= max);
-                }
-                
-                if (inRange) {
-                  count++;
-                  found = true;
-                  break;
-                }
-              }
-            }
-          }
-        }
-        
-        data.rows[i].cells.push({count: count, total: ftdCount, pct: ftdCount > 0 ? count / ftdCount : 0});
+    for (var i = 1; i < depositRanges.length; i++) {
+      var min = parseInt(depositRanges[i]);
+      var count = 0;
+      for (var j = 0; j < ftdData.length; j++) {
+        var deposits = gdMap[ftdData[j].id] || 0;
+        if (deposits >= min) count++;
       }
-    } else {
-      for (var k = 1; k < depositRanges.length; k++) {
-        data.rows[k].cells.push({count: 0, total: ftdCount, pct: 0});
-      }
+      data.rows[i].cells.push({count: count, total: ftdCount, pct: ftdCount > 0 ? count / ftdCount : 0});
     }
   });
   
@@ -1196,53 +1294,34 @@ function getCellPlayers(params) {
   var depositRange = params.depositRange;
   
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheets = ss.getSheets();
   
   var ftdSheetName = month.toUpperCase() + ' FTD';
-  
   Logger.log('Looking for FTD: ' + ftdSheetName);
   
   var ftdSheet = ss.getSheetByName(ftdSheetName);
-  
   if (!ftdSheet) {
     ftdSheetName = month.charAt(0).toUpperCase() + month.slice(1).toLowerCase() + ' FTD';
     ftdSheet = ss.getSheetByName(ftdSheetName);
   }
-  
   if (!ftdSheet) {
     return {error: 'Sheet not found: ' + month + ' FTD (tried: ' + ftdSheetName + ')'};
   }
   
-  var activeSheets = [];
-  sheets.forEach(function(sheet) {
-    var name = sheet.getName();
-    if (name.indexOf('ACTIVE') !== -1) {
-      activeSheets.push(sheet);
-    }
-  });
-  
-  activeSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
-  
-  if (activeSheets.length === 0) {
-    return {error: 'No ACTIVE sheets found in document'};
+  // Load GENERAL DASHBOARD
+  var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+  if (!gdSheet) {
+    return {error: 'Sheet "GENERAL DASHBOARD" not found'};
   }
+  var gdPlayers = getDetailedSheetData(gdSheet);
+  // Build lookup map: id → player object
+  var gdMap = {};
+  gdPlayers.forEach(function(p) { gdMap[p.id] = p; });
+  Logger.log('GENERAL DASHBOARD loaded: ' + gdPlayers.length + ' players');
   
-  var allActiveData = [];
-  activeSheets.forEach(function(sheet) {
-    allActiveData.push({
-      name: sheet.getName(),
-      data: getDetailedSheetData(sheet)
-    });
-  });
-  
-  Logger.log('Loaded ' + allActiveData.length + ' ACTIVE sheets');
-  
+  // Get FTD player IDs
   var ftdData = ftdSheet.getDataRange().getValues();
   var ftdHeaders = ftdData[0];
   var ftdIdIdx = -1;
-  
   for (var i = 0; i < ftdHeaders.length; i++) {
     if (ftdHeaders[i] === 'id') ftdIdIdx = i;
   }
@@ -1252,48 +1331,37 @@ function getCellPlayers(params) {
     var id = String(ftdData[i][ftdIdIdx] || '').trim();
     if (id) ftdPlayerIds.push(id);
   }
-  
   Logger.log('FTD player IDs: ' + ftdPlayerIds.length);
   
+  function buildPlayerInfo(player) {
+    return {
+      id: player.id,
+      email: player.email,
+      country: player.country,
+      status: player.status,
+      tags: player.tags || '',
+      trafficType: player.trafficType || '',
+      trafficDirection: player.trafficDirection || '',
+      trafficSource: player.trafficSource || '',
+      actualDeposits: player.depositCount,
+      depositSum: player.depositSum || 0,
+      cashoutSum: player.cashoutSum || 0,
+      inout: player.inout || 0,
+      foundIn: 'GENERAL DASHBOARD'
+    };
+  }
+  
   if (depositRange === 'FTD') {
-    // ✅ FIX: DEDUPLICATE FTD PLAYERS
     var ftdAchieved = [];
-    var seenPlayers = {}; // Track unique players
-    
+    var seenPlayers = {};
     ftdPlayerIds.forEach(function(playerId) {
-      // Skip if already found
       if (seenPlayers[playerId]) return;
-      
-      for (var i = 0; i < allActiveData.length; i++) {
-        var activeSheet = allActiveData[i];
-        
-        for (var j = 0; j < activeSheet.data.length; j++) {
-          var player = activeSheet.data[j];
-          
-          if (player.id === playerId) {
-            ftdAchieved.push({
-              id: player.id,
-              email: player.email,
-              country: player.country,
-              status: player.status,
-              tags: player.tags || '',
-              trafficType: player.trafficType || '',
-              trafficDirection: player.trafficDirection || '',
-              trafficSource: player.trafficSource || '',
-              actualDeposits: player.depositCount,
-              depositSum: player.depositSum || 0,
-              cashoutSum: player.cashoutSum || 0,
-              inout: player.inout || 0,
-              foundIn: activeSheet.name
-            });
-            seenPlayers[playerId] = true; // Mark as seen
-            break;
-          }
-        }
-        if (seenPlayers[playerId]) break; // Stop searching after found
+      var player = gdMap[playerId];
+      if (player) {
+        ftdAchieved.push(buildPlayerInfo(player));
+        seenPlayers[playerId] = true;
       }
     });
-    
     return {
       achieved: ftdAchieved,
       dropped: [],
@@ -1311,70 +1379,16 @@ function getCellPlayers(params) {
   var dropped = [];
   
   ftdPlayerIds.forEach(function(playerId) {
-    var found = false;
-    var playerInfo = null;
+    var player = gdMap[playerId];
+    if (!player) return;
     
-    for (var i = 0; i < allActiveData.length && !found; i++) {
-      var activeSheet = allActiveData[i];
-      
-      for (var j = 0; j < activeSheet.data.length; j++) {
-        var player = activeSheet.data[j];
-        
-        if (player.id === playerId) {
-          var deposits = player.depositCount;
-          var inRange = false;
-          
-          if (max === null) {
-            inRange = (deposits >= min);
-          } else {
-            inRange = (deposits >= min && deposits <= max);
-          }
-          
-          if (inRange) {
-            achieved.push({
-              id: player.id,
-              email: player.email,
-              country: player.country,
-              status: player.status,
-              tags: player.tags || '',
-              trafficType: player.trafficType || '',
-              trafficDirection: player.trafficDirection || '',
-              trafficSource: player.trafficSource || '',
-              actualDeposits: deposits,
-              depositSum: player.depositSum || 0,
-              cashoutSum: player.cashoutSum || 0,
-              inout: player.inout || 0,
-              foundIn: activeSheet.name
-            });
-            found = true;
-            break;
-          } else {
-            if (!playerInfo) {
-              playerInfo = {
-                id: player.id,
-                email: player.email,
-                country: player.country,
-                status: player.status,
-                tags: player.tags || '',
-                trafficType: player.trafficType || '',
-              trafficDirection: player.trafficDirection || '',
-              trafficSource: player.trafficSource || '',
-                actualDeposits: deposits,
-                depositSum: player.depositSum || 0,
-                cashoutSum: player.cashoutSum || 0,
-                inout: player.inout || 0,
-                foundIn: activeSheet.name
-              };
-            }
-          }
-        }
-      }
-    }
+    var deposits = player.depositCount;
+    var inRange = max === null ? (deposits >= min) : (deposits >= min && deposits <= max);
     
-    if (!found) {
-      if (playerInfo) {
-        dropped.push(playerInfo);
-      }
+    if (inRange) {
+      achieved.push(buildPlayerInfo(player));
+    } else {
+      dropped.push(buildPlayerInfo(player));
     }
   });
   
@@ -1866,6 +1880,7 @@ function kpiGetWebAppUrl() {
 function kpiFindSheetsForProject_() {
   var sheets = SpreadsheetApp.getActive().getSheets();
   var tabsData = {};
+  var groupMap = {}; // tab -> group name
   
   for (var i = 0; i < sheets.length; i++) {
     var name = sheets[i].getName();
@@ -1875,10 +1890,16 @@ function kpiFindSheetsForProject_() {
     
     if (up.indexOf('SLOTORNADO') === -1) continue;
     
-    var prefixMatch = name.match(/^\[([^\]]+)\]/);
+    var prefixMatch = name.match(/\[([^\]]+)\]/);
     if (!prefixMatch) continue;
     
     var tab = prefixMatch[1].toUpperCase();
+    
+    // Parse {GROUP} if present
+    var groupMatch = name.match(/\{([^}]+)\}/);
+    if (groupMatch) {
+      groupMap[tab] = groupMatch[1].trim();
+    }
     
     if (!tabsData[tab]) {
       tabsData[tab] = { monthly: [], weekly: [] };
@@ -1892,7 +1913,7 @@ function kpiFindSheetsForProject_() {
     }
   }
   
-  return tabsData;
+  return { tabs: tabsData, groups: groupMap };
 }
 
 /**
@@ -1936,15 +1957,18 @@ function readMetricFormats() {
  */
 function kpiLoadProject() {
   try {
-    var tabsFound = kpiFindSheetsForProject_();
+    var found = kpiFindSheetsForProject_();
+    var tabsFound = found.tabs;
+    var groupMap = found.groups;
     
     Logger.log('Found tabs: ' + JSON.stringify(Object.keys(tabsFound)));
+    Logger.log('Groups: ' + JSON.stringify(groupMap));
     
     if (Object.keys(tabsFound).length === 0) {
       throw new Error('No [VIP] or [TOTAL] sheets found');
     }
     
-    var result = { tabs: {} };
+    var result = { tabs: {}, groups: groupMap };
     
     for (var tab in tabsFound) {
       var sheets = tabsFound[tab];
@@ -4234,6 +4258,84 @@ function getPromoPlan() {
   }
 }
 
+function addCalendarEvent(eventData) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PROMO_PLAN');
+    if (!sheet) { initPromoPlanSheet(); sheet = ss.getSheetByName('PROMO_PLAN'); }
+    
+    // Parse date from dd.MM.yyyy
+    var parts = String(eventData.date || '').split('.');
+    var dateVal;
+    if (parts.length === 3) {
+      dateVal = new Date(parseInt(parts[2]), parseInt(parts[1]) - 1, parseInt(parts[0]));
+    } else {
+      dateVal = new Date(eventData.date);
+    }
+    if (isNaN(dateVal.getTime())) return { error: 'Invalid date' };
+    
+    sheet.appendRow([dateVal, eventData.event || '', eventData.type || 'Promo', eventData.description || '', eventData.status || '']);
+    
+    // Return formatted event
+    var today = new Date(); today.setHours(0,0,0,0);
+    var diffDays = Math.ceil((dateVal - today) / 86400000);
+    return {
+      success: true,
+      event: {
+        date: Utilities.formatDate(dateVal, 'Europe/Kiev', 'dd.MM.yyyy'),
+        dateShort: Utilities.formatDate(dateVal, 'Europe/Kiev', 'dd MMM'),
+        dayOfWeek: Utilities.formatDate(dateVal, 'Europe/Kiev', 'EEE'),
+        event: String(eventData.event || '').trim(),
+        type: String(eventData.type || 'Promo').trim(),
+        description: String(eventData.description || '').trim(),
+        status: String(eventData.status || '').trim(),
+        daysUntil: diffDays,
+        isPast: diffDays < 0,
+        isToday: diffDays === 0
+      }
+    };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function deleteCalendarEvent(eventData) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PROMO_PLAN');
+    if (!sheet) return { error: 'No PROMO_PLAN sheet' };
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toUpperCase(); });
+    var dateCol = headers.indexOf('DATE');
+    var nameCol = headers.indexOf('EVENT');
+    if (dateCol === -1 || nameCol === -1) return { error: 'Missing columns' };
+    
+    // Parse target date from dd.MM.yyyy
+    var parts = String(eventData.date || '').split('.');
+    var targetDay = parseInt(parts[0]);
+    var targetMonth = parseInt(parts[1]);
+    var targetYear = parseInt(parts[2]);
+    var targetName = String(eventData.event || '').trim().toLowerCase();
+    
+    for (var i = data.length - 1; i >= 1; i--) {
+      var d = data[i][dateCol];
+      if (!d) continue;
+      var rowDate = d instanceof Date ? d : new Date(d);
+      if (isNaN(rowDate.getTime())) continue;
+      
+      var rowName = String(data[i][nameCol] || '').trim().toLowerCase();
+      if (rowDate.getDate() === targetDay && (rowDate.getMonth() + 1) === targetMonth && rowDate.getFullYear() === targetYear && rowName === targetName) {
+        sheet.deleteRow(i + 1);
+        return { success: true };
+      }
+    }
+    return { error: 'Event not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
 /**
  * Create PROMO_PLAN sheet with holidays pre-filled
  */
@@ -4642,3 +4744,211 @@ function getPaymentsData() {
     return { error: e.message };
   }
 }
+
+// ==========================================
+// PLAYER LISTS
+// ==========================================
+
+function getPlayerLists() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Lists');
+    if (!sheet) return { lists: [] };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { lists: [] };
+    
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    
+    // Migration: add status column if missing
+    if (headers.indexOf('status') === -1) {
+      var lastCol = headers.length + 1;
+      sheet.getRange(1, lastCol).setValue('status');
+      sheet.getRange(1, lastCol).setFontWeight('bold');
+      headers.push('status');
+    }
+    
+    var ci = function(name) {
+      for (var i = 0; i < headers.length; i++) {
+        if (headers[i] === name) return i;
+      }
+      return -1;
+    };
+    
+    var cId = ci('id');
+    var cName = ci('name');
+    var cPlayers = ci('players');
+    var cPriority = ci('priority');
+    var cNotes = ci('notes');
+    var cStatus = ci('status');
+    var cCreated = ci('created');
+    var cUpdated = ci('updated');
+    
+    var lists = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = data[i];
+      var id = cId >= 0 ? String(row[cId] || '') : '';
+      if (!id) continue;
+      
+      var playersJson = cPlayers >= 0 ? String(row[cPlayers] || '[]') : '[]';
+      var players;
+      try { players = JSON.parse(playersJson); } catch(e) { players = []; }
+      
+      lists.push({
+        id: id,
+        name: cName >= 0 ? String(row[cName] || '') : '',
+        players: players,
+        priority: cPriority >= 0 ? String(row[cPriority] || 'medium') : 'medium',
+        notes: cNotes >= 0 ? String(row[cNotes] || '') : '',
+        status: cStatus >= 0 ? String(row[cStatus] || 'backlog') : 'backlog',
+        created: cCreated >= 0 ? String(row[cCreated] || '') : '',
+        updated: cUpdated >= 0 ? String(row[cUpdated] || '') : '',
+        rowIndex: i + 1
+      });
+    }
+    
+    return { lists: lists };
+  } catch(e) {
+    return { error: e.message, lists: [] };
+  }
+}
+
+function savePlayerList(data) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Lists');
+    if (!sheet) {
+      sheet = ss.insertSheet('Lists');
+      sheet.getRange(1, 1, 1, 8).setValues([['id', 'name', 'players', 'priority', 'notes', 'status', 'created', 'updated']]);
+      sheet.getRange(1, 1, 1, 8).setFontWeight('bold');
+    }
+    
+    var id = 'list_' + new Date().getTime();
+    var now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    var playersJson = JSON.stringify(data.players || []);
+    
+    sheet.appendRow([id, data.name || 'Untitled', playersJson, data.priority || 'medium', data.notes || '', data.status || 'backlog', now, now]);
+    
+    return { success: true, id: id };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function updatePlayerList(data) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Lists');
+    if (!sheet) return { error: 'Lists sheet not found' };
+    
+    var allData = sheet.getDataRange().getValues();
+    var headers = allData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var cId = headers.indexOf('id');
+    
+    for (var i = 1; i < allData.length; i++) {
+      if (String(allData[i][cId]) === data.id) {
+        var row = i + 1;
+        var cPriority = headers.indexOf('priority');
+        var cNotes = headers.indexOf('notes');
+        var cUpdated = headers.indexOf('updated');
+        var now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+        
+        if (cPriority >= 0 && data.priority !== undefined) sheet.getRange(row, cPriority + 1).setValue(data.priority);
+        if (cNotes >= 0 && data.notes !== undefined) sheet.getRange(row, cNotes + 1).setValue(data.notes);
+        if (cUpdated >= 0) sheet.getRange(row, cUpdated + 1).setValue(now);
+        
+        return { success: true };
+      }
+    }
+    return { error: 'List not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function deletePlayerList(id) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Lists');
+    if (!sheet) return { error: 'Lists sheet not found' };
+    
+    var allData = sheet.getDataRange().getValues();
+    var headers = allData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var cId = headers.indexOf('id');
+    
+    for (var i = 1; i < allData.length; i++) {
+      if (String(allData[i][cId]) === id) {
+        sheet.deleteRow(i + 1);
+        return { success: true };
+      }
+    }
+    return { error: 'List not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+// New API wrappers for Lists
+function getLists() {
+  var result = getPlayerLists();
+  if (result.error) return result;
+  // Map old format to new
+  var prioMap = { 'high': 1, 'medium': 3, 'low': 5 };
+  (result.lists || []).forEach(function(l) {
+    l.comments = l.notes || l.comments || '';
+    if (typeof l.priority === 'string') l.priority = prioMap[l.priority] || 3;
+  });
+  return result;
+}
+
+function saveList(data) {
+  var prioMap = { 1: 'high', 2: 'high', 3: 'medium', 4: 'low', 5: 'low' };
+  return savePlayerList({
+    name: data.name || 'Untitled',
+    players: data.players || [],
+    priority: prioMap[data.priority] || 'medium',
+    notes: data.comments || '',
+    status: data.status || 'backlog'
+  });
+}
+
+function updateList(listId, updates) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('Lists');
+    if (!sheet) return { error: 'Lists sheet not found' };
+    var allData = sheet.getDataRange().getValues();
+    var headers = allData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var cId = headers.indexOf('id');
+    var prioMap = { 1: 'high', 2: 'high', 3: 'medium', 4: 'low', 5: 'low' };
+    
+    for (var i = 1; i < allData.length; i++) {
+      if (String(allData[i][cId]) === listId) {
+        var row = i + 1;
+        if (updates.name !== undefined) sheet.getRange(row, headers.indexOf('name') + 1).setValue(updates.name);
+        if (updates.priority !== undefined) {
+          var pVal = typeof updates.priority === 'number' ? (prioMap[updates.priority] || 'medium') : updates.priority;
+          sheet.getRange(row, headers.indexOf('priority') + 1).setValue(pVal);
+        }
+        if (updates.comments !== undefined) {
+          var notesCol = headers.indexOf('notes');
+          if (notesCol === -1) notesCol = headers.indexOf('comments');
+          if (notesCol !== -1) sheet.getRange(row, notesCol + 1).setValue(updates.comments);
+        }
+        if (updates.players !== undefined) sheet.getRange(row, headers.indexOf('players') + 1).setValue(JSON.stringify(updates.players));
+        if (updates.status !== undefined) {
+          var statusCol = headers.indexOf('status');
+          if (statusCol !== -1) sheet.getRange(row, statusCol + 1).setValue(updates.status);
+        }
+        var updCol = headers.indexOf('updated');
+        if (updCol !== -1) sheet.getRange(row, updCol + 1).setValue(new Date());
+        return { success: true };
+      }
+    }
+    return { error: 'List not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function deleteList(listId) { return deletePlayerList(listId); }
