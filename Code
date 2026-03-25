@@ -5,6 +5,92 @@
  * ✅ FIX: Player Profiling
  *************************************************/
 
+/** 
+ * RUN THIS FROM APPS SCRIPT EDITOR to diagnose group matching.
+ * Go to Apps Script → select debugGroupMatching → Run
+ * Then check View → Logs
+ */
+function debugGroupMatching() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. GROUPS sheet
+  var groupsSheet = ss.getSheetByName('GROUPS');
+  if (!groupsSheet) { Logger.log('ERROR: GROUPS sheet not found'); return; }
+  var gData = groupsSheet.getDataRange().getValues();
+  var gHeaders = gData[0];
+  Logger.log('=== GROUPS SHEET ===');
+  Logger.log('Headers: ' + JSON.stringify(gHeaders));
+  Logger.log('Total rows: ' + (gData.length - 1));
+  
+  // Log first 5 rows raw
+  for (var r = 1; r < Math.min(6, gData.length); r++) {
+    Logger.log('Row ' + r + ': ' + JSON.stringify(gData[r]));
+  }
+  
+  // Find columns
+  var gH = gHeaders.map(function(h) { return String(h).trim().toLowerCase(); });
+  var groupCol = gH.indexOf('group');
+  var nameCol = gH.indexOf('name');
+  Logger.log('group col index: ' + groupCol + ', name col index: ' + nameCol);
+  
+  if (groupCol >= 0) {
+    Logger.log('--- Raw GROUP column values (first 10): ---');
+    for (var r = 1; r < Math.min(11, gData.length); r++) {
+      var raw = gData[r][groupCol];
+      Logger.log('  Row ' + r + ': type=' + typeof raw + ', value=' + JSON.stringify(raw) + ', toString="' + String(raw) + '"');
+    }
+  }
+  
+  // 2. GENERAL DASHBOARD
+  var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+  if (!gdSheet) { Logger.log('ERROR: GENERAL DASHBOARD not found'); return; }
+  var gdData = gdSheet.getDataRange().getValues();
+  var gdH = gdData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+  var emailCol = gdH.indexOf('email');
+  var groupsCol = gdH.indexOf('groups');
+  Logger.log('\n=== GENERAL DASHBOARD ===');
+  Logger.log('Headers: ' + JSON.stringify(gdData[0]));
+  Logger.log('Total rows: ' + (gdData.length - 1));
+  Logger.log('email col: ' + emailCol + ', groups col: ' + groupsCol);
+  
+  if (groupsCol >= 0) {
+    Logger.log('--- Raw GROUPS column values (first 10 non-empty): ---');
+    var logged = 0;
+    for (var p = 1; p < gdData.length && logged < 10; p++) {
+      var raw = gdData[p][groupsCol];
+      if (raw && String(raw).trim() !== '' && String(raw).trim() !== '[]') {
+        Logger.log('  Row ' + p + ': type=' + typeof raw + ', value=' + JSON.stringify(raw) + ', toString="' + String(raw) + '"');
+        logged++;
+      }
+    }
+    if (logged === 0) {
+      Logger.log('  ⚠️ ALL groups values are EMPTY! No player has any group assigned.');
+      // Check if column name is correct
+      Logger.log('  All column headers: ' + JSON.stringify(gdH));
+      // Try to find any column containing "group"
+      for (var c = 0; c < gdH.length; c++) {
+        if (gdH[c].indexOf('group') !== -1) {
+          Logger.log('  Found column with "group" at index ' + c + ': "' + gdH[c] + '"');
+          // Show sample values from this column
+          for (var p2 = 1; p2 < Math.min(6, gdData.length); p2++) {
+            Logger.log('    Row ' + p2 + ': ' + JSON.stringify(gdData[p2][c]));
+          }
+        }
+      }
+    }
+    
+    // Count non-empty groups
+    var nonEmpty = 0;
+    for (var p = 1; p < gdData.length; p++) {
+      var raw = String(gdData[p][groupsCol] || '').trim();
+      if (raw && raw !== '' && raw !== '[]') nonEmpty++;
+    }
+    Logger.log('Players with non-empty groups: ' + nonEmpty + ' out of ' + (gdData.length - 1));
+  }
+  
+  Logger.log('\n=== DONE ===');
+}
+
 /******************** MENU ********************/
 function onOpen() {
   SpreadsheetApp.getUi()
@@ -29,7 +115,379 @@ function openBonusCalculator() {
 }
 
 /******************** WEB ENTRYPOINT ********************/
+
+// =============================================
+// TIMETABLE ACCESS LIST (public link allowlist)
+// =============================================
+function getTimetableAccessList() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_ACCESS');
+    if (!sheet) return { success: true, emails: [] };
+    var data = sheet.getDataRange().getValues();
+    var emails = [];
+    for (var i = 0; i < data.length; i++) {
+      var e = String(data[i][0] || '').trim().toLowerCase();
+      if (e && e.indexOf('@') > 0) emails.push(e);
+    }
+    return { success: true, emails: emails };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveTimetableAccessList(emails) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_ACCESS');
+    if (!sheet) { sheet = ss.insertSheet('TIMETABLE_ACCESS'); }
+    sheet.clearContents();
+    if (emails && emails.length) {
+      var rows = emails.map(function(e){ return [e]; });
+      sheet.getRange(1, 1, rows.length, 1).setValues(rows);
+    }
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+
+
+// =============================================
+// ONBOARDING — CREATE GOOGLE MEET CALLS
+// =============================================
+function createOnboardingMeetings(params) {
+  // params: { userEmail, tutorEmail (per day), days: [{index, name, date, tutorEmail}], planName }
+  try {
+    var calendar = CalendarApp.getDefaultCalendar();
+    var results = [];
+    var errors = [];
+
+    (params.days || []).forEach(function(day) {
+      if (!day.date || !day.tutorEmail) return; // skip days without tutor or date
+
+      try {
+        var dateObj = new Date(day.date + 'T10:00:00'); // 10:00 Kyiv default
+        var endObj  = new Date(day.date + 'T10:30:00'); // 30 min
+
+        var title = '[Onboarding] ' + params.planName + ' - ' + (day.name || 'Day '+(day.index+1));
+        var guests = [params.userEmail, day.tutorEmail].filter(function(e, i, arr) { return e && arr.indexOf(e) === i; });
+
+        var event = calendar.createEvent(title, dateObj, endObj, {
+          description: 'Onboarding session: ' + (day.name||'Day '+(day.index+1)) + ' | Trainee: ' + params.userEmail + ' | Tutor: ' + day.tutorEmail,
+          guests: guests.join(','),
+          sendInvites: true
+        });
+
+        // Add Google Meet conference via Advanced Calendar Service
+        var meetUrl = null;
+        try {
+          var advEvent = Calendar.Events.patch(
+            { conferenceData: { createRequest: { requestId: Utilities.getUuid(), conferenceSolutionKey: { type: 'hangoutsMeet' } } } },
+            'primary', event.getId(), { conferenceDataVersion: 1 }
+          );
+          var eps = advEvent.conferenceData && advEvent.conferenceData.entryPoints;
+          if (eps) {
+            var videoEp = eps.filter(function(e){ return e.entryPointType === 'video'; })[0];
+            if (videoEp) meetUrl = videoEp.uri;
+          }
+        } catch(meetErr) {
+          // Meet API may not be enabled - still create event without Meet
+          Logger.log('Meet conference creation failed: ' + meetErr);
+        }
+
+        results.push({
+          dayIndex: day.index,
+          dayName: day.name,
+          date: day.date,
+          eventId: event.getId(),
+          meetUrl: meetUrl,
+          calUrl: event.getOriginalCalendarId ? null : 'https://calendar.google.com/calendar/r/eventedit/'+event.getId()
+        });
+
+      } catch(dayErr) {
+        errors.push('Day '+(day.index+1)+': '+dayErr.message);
+      }
+    });
+
+    return { success: true, meetings: results, errors: errors };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+
+// =============================================
+// ONBOARDING SCHEDULING - Free/Busy + Single Meeting
+// =============================================
+function getFreeBusy(params) {
+  // Uses CalendarApp to get busy slots for each email
+  try {
+    var startOfDay = new Date(params.date + 'T07:00:00');
+    var endOfDay   = new Date(params.date + 'T22:00:00');
+    var busy = {};
+    params.emails.forEach(function(email) {
+      busy[email] = [];
+      try {
+        // Get all calendars we have access to for this user
+        var cals = CalendarApp.getCalendarsByName(email);
+        // Also try by ID (email = calendar ID for Google accounts)
+        var cal = CalendarApp.getCalendarById(email);
+        var allCals = cal ? [cal] : cals;
+        allCals.forEach(function(c) {
+          var events = c.getEvents(startOfDay, endOfDay);
+          events.forEach(function(ev) {
+            if (ev.getMyStatus() !== CalendarApp.GuestStatus.NO) {
+              busy[email].push({
+                start: ev.getStartTime().toISOString(),
+                end: ev.getEndTime().toISOString()
+              });
+            }
+          });
+        });
+      } catch(e2) {
+        Logger.log('FreeBusy error for ' + email + ': ' + e2);
+      }
+    });
+    return { success: true, busy: busy };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function createSingleMeeting(params) {
+  try {
+    var tz = 'Europe/Kiev';
+    var guests = [params.userEmail, params.tutorEmail]
+      .filter(function(e,i,a){ return e && a.indexOf(e)===i; })
+      .map(function(e){ return { email: e }; });
+
+    // Single API call — create event WITH Meet conference in one request
+    var eventResource = {
+      summary: params.title,
+      description: params.description || '',
+      start: { dateTime: params.date + 'T' + params.startTime + ':00', timeZone: tz },
+      end:   { dateTime: params.date + 'T' + params.endTime   + ':00', timeZone: tz },
+      attendees: guests,
+      conferenceData: {
+        createRequest: {
+          requestId: params.date + '-' + params.startTime + '-' + params.userEmail.split('@')[0],
+          conferenceSolutionKey: { type: 'hangoutsMeet' }
+        }
+      }
+    };
+
+    var created = Calendar.Events.insert(eventResource, 'primary', {
+      conferenceDataVersion: 1,
+      sendUpdates: 'all'
+    });
+
+    var meetUrl = null;
+    var eps = (created.conferenceData && created.conferenceData.entryPoints) || [];
+    for (var i = 0; i < eps.length; i++) {
+      if (eps[i].entryPointType === 'video') { meetUrl = eps[i].uri; break; }
+    }
+
+    Logger.log('createSingleMeeting: id=' + created.id + ' meetUrl=' + meetUrl);
+    return { success: true, eventId: created.id, meetUrl: meetUrl };
+  } catch(e) {
+    Logger.log('createSingleMeeting ERROR: ' + e.message);
+    return { error: e.message };
+  }
+}
+
+function deleteCalendarEventById(params) {
+  try {
+    var cal = CalendarApp.getDefaultCalendar();
+    var events = cal.getEventById(params.eventId);
+    if (events) { events.deleteEvent(); }
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+
+// =============================================
+// CHARACTERS — Manager Profile Cards
+// =============================================
+function getCharacters() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('CHARACTERS');
+    if (!sheet) {
+      // Create with default structure
+      sheet = ss.insertSheet('CHARACTERS');
+      sheet.getRange(1,1).setValue('data');
+      sheet.getRange(2,1).setValue('[]');
+    }
+    var raw = sheet.getRange(2,1).getValue();
+    var chars = [];
+    try { chars = JSON.parse(raw) || []; } catch(e) { chars = []; }
+    return { success: true, characters: chars };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveCharacters(characters) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('CHARACTERS');
+    if (!sheet) { sheet = ss.insertSheet('CHARACTERS'); sheet.getRange(1,1).setValue('data'); }
+    sheet.getRange(2,1).setValue(JSON.stringify(characters));
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+// Get manager names from MANAGER sheet (for auto-populating)
+function getManagerNames() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('MANAGER');
+    if (!sheet) return { success: true, managers: [] };
+    var data = sheet.getDataRange().getValues();
+    var managers = [];
+    for (var i = 1; i < data.length; i++) {
+      var name = String(data[i][0]||'').trim();
+      if (name) managers.push(name);
+    }
+    return { success: true, managers: managers };
+  } catch(e) { return { error: e.message }; }
+}
+
+// =============================================
+// ONBOARDING PLANS
+// =============================================
+
+
+// =============================================
+// REAL-TIME POLLING — Change Summary
+// =============================================
+function getChangeSummary() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var summary = {};
+
+    // Onboarding assignments checksum (most active)
+    var asgnSheet = ss.getSheetByName('ONBOARDING_ASSIGNMENTS');
+    if (asgnSheet) {
+      var asgnData = asgnSheet.getRange(2,1).getValue();
+      summary.ob_asgn_len = String(asgnData).length;
+      summary.ob_asgn_hash = Utilities.computeDigest(
+        Utilities.DigestAlgorithm.MD5,
+        String(asgnData).slice(0, 2000)
+      ).slice(0,4).map(function(b){ return (b < 0 ? b+256 : b).toString(16).padStart(2,'0'); }).join('');
+    }
+
+    // Onboarding plans checksum
+    var planSheet = ss.getSheetByName('ONBOARDING_PLANS');
+    if (planSheet) {
+      var planData = planSheet.getRange(2,1).getValue();
+      summary.ob_plans_len = String(planData).length;
+    }
+
+    // QA results count
+    var qaSheet = ss.getSheetByName('QA_RESULTS');
+    if (qaSheet) summary.qa_rows = qaSheet.getLastRow();
+
+    // Timetable
+    var ttSheet = ss.getSheetByName('TIMETABLE');
+    if (ttSheet) summary.tt_rows = ttSheet.getLastRow();
+
+    summary.ts = new Date().getTime();
+    return { success: true, summary: summary };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+// =============================================
+// ONBOARDING ASSIGNMENTS
+// =============================================
+function getOnboardingAssignments() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ONBOARDING_ASSIGNMENTS');
+    if (!sheet) return { success: true, assignments: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, assignments: [] };
+    var assignments = [];
+    try { assignments = JSON.parse(String(data[1][0] || '[]')); } catch(e) { assignments = []; }
+    return { success: true, assignments: assignments };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveOnboardingAssignments(assignments) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ONBOARDING_ASSIGNMENTS');
+    if (!sheet) {
+      sheet = ss.insertSheet('ONBOARDING_ASSIGNMENTS');
+      sheet.getRange(1,1).setValue('assignments_json');
+      sheet.getRange(1,1).setFontWeight('bold').setBackground('#6366f1').setFontColor('#fff');
+    }
+    if (sheet.getLastRow() < 2) sheet.appendRow(['']);
+    sheet.getRange(2, 1).setValue(JSON.stringify(assignments || []));
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+
+// =============================================
+// ACCESS USERS LIST (for Onboarding assignments)
+// =============================================
+function getAccessUsers() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { success: true, users: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, users: [] };
+    var headers = data[0].map(function(h){ return String(h).trim().toLowerCase(); });
+    var emailIdx   = headers.indexOf('email');
+    var managerIdx = headers.indexOf('manager');
+    var roleIdx    = headers.indexOf('role');
+    if (emailIdx < 0) return { success: true, users: [] };
+    var users = [];
+    for (var i = 1; i < data.length; i++) {
+      var email = String(data[i][emailIdx] || '').trim().toLowerCase();
+      if (!email) continue;
+      var manager = managerIdx >= 0 ? String(data[i][managerIdx] || '').trim() : '';
+      var role    = roleIdx    >= 0 ? String(data[i][roleIdx]    || '').trim() : '';
+      users.push({ email: email, name: manager || email.split('@')[0], role: role });
+    }
+    return { success: true, users: users };
+  } catch(e) { return { error: e.message }; }
+}
+
+function getOnboardingPlans() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ONBOARDING_PLANS');
+    if (!sheet) return { success: true, plans: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, plans: [] };
+    var plans = [];
+    try { plans = JSON.parse(String(data[1][0] || '[]')); } catch(e) { plans = []; }
+    return { success: true, plans: plans };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveOnboardingPlans(plans) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ONBOARDING_PLANS');
+    if (!sheet) {
+      sheet = ss.insertSheet('ONBOARDING_PLANS');
+      sheet.getRange(1,1).setValue('plans_json');
+      sheet.getRange(1,1).setFontWeight('bold').setBackground('#667eea').setFontColor('#fff');
+    }
+    if (sheet.getLastRow() < 2) sheet.appendRow(['']);
+    sheet.getRange(2, 1).setValue(JSON.stringify(plans || []));
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
 function doGet(e) {
+  if (e && e.parameter && e.parameter.view === 'public') {
+    return HtmlService.createHtmlOutput(getTimetablePublicHtml())
+      .setTitle('Team Schedule — View Only')
+      .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+  }
   return HtmlService.createHtmlOutputFromFile('App')
     .setTitle('Slotornado Analytics')
     .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
@@ -40,26 +498,618 @@ function checkAccess() {
     var email = Session.getActiveUser().getEmail().toLowerCase().trim();
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('ACCESS');
-    if (!sheet) return { allowed: true, role: 'admin', email: email }; // no ACCESS sheet = no restrictions
+    if (!sheet) return { allowed: true, role: 'admin', email: email, manager: '' };
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return { allowed: false, email: email };
     var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
     var emailCol = headers.indexOf('email');
     var roleCol = headers.indexOf('role');
-    if (emailCol === -1) return { allowed: true, role: 'admin', email: email };
+    var mgrCol = headers.indexOf('manager');
+    if (emailCol === -1) return { allowed: true, role: 'admin', email: email, manager: '' };
     for (var i = 1; i < data.length; i++) {
       var rowEmail = String(data[i][emailCol] || '').toLowerCase().trim();
       if (rowEmail === email) {
         var role = roleCol >= 0 ? String(data[i][roleCol] || 'user').toLowerCase().trim() : 'user';
-        return { allowed: true, role: role, email: email };
+        var mgr = mgrCol >= 0 ? String(data[i][mgrCol] || '').trim() : '';
+        return { allowed: true, role: role, email: email, manager: mgr };
       }
     }
     return { allowed: false, email: email };
   } catch(e) {
-    return { allowed: true, role: 'user', email: '', error: e.message };
+    return { allowed: true, role: 'user', email: '', manager: '', error: e.message };
   }
 }
 
+function loginUser(params) {
+  try {
+    var inputEmail = String(params.email || '').toLowerCase().trim();
+    var inputPassword = String(params.password || '').trim();
+    
+    if (!inputEmail || !inputPassword) return { error: 'Email and password are required' };
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { error: 'No users configured' };
+    
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = headers.indexOf('email');
+    var roleCol = headers.indexOf('role');
+    var pwCol = headers.indexOf('password');
+    var mgrCol = headers.indexOf('manager');
+    
+    if (emailCol === -1 || pwCol === -1) return { error: 'Invalid ACCESS sheet structure' };
+    
+    for (var i = 1; i < data.length; i++) {
+      var rowEmail = String(data[i][emailCol] || '').toLowerCase().trim();
+      if (rowEmail === inputEmail) {
+        var storedPw = String(data[i][pwCol] || '').trim();
+        if (storedPw === inputPassword) {
+          var role = roleCol >= 0 ? String(data[i][roleCol] || 'user').toLowerCase().trim() : 'user';
+          var mgr = mgrCol >= 0 ? String(data[i][mgrCol] || '').trim() : '';
+          var nameCol = headers.indexOf('name');
+          var nickCol = headers.indexOf('nickname');
+          var emojiCol = headers.indexOf('emoji');
+          var userName = nameCol >= 0 ? String(data[i][nameCol] || '').trim() : '';
+          var nickname = nickCol >= 0 ? String(data[i][nickCol] || '').trim() : '';
+          var userEmoji = emojiCol >= 0 ? String(data[i][emojiCol] || '').trim() : '';
+          if (params.remember) {
+            saveRememberMe_(inputEmail, inputPassword);
+          } else {
+            clearRememberMe_();
+          }
+          return { allowed: true, role: role, email: inputEmail, manager: mgr, name: userName, nickname: nickname, emoji: userEmoji };
+        } else {
+          return { error: 'Incorrect password' };
+        }
+      }
+    }
+    
+    return { error: 'User not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function getRememberMe() {
+  try {
+    // Clean up shared _anon key that may have been created
+    var props = PropertiesService.getScriptProperties();
+    props.deleteProperty('rmb__anon');
+    var gEmail = Session.getActiveUser().getEmail();
+    // If we can't identify the Google user, DON'T auto-fill (prevents cross-user leaks)
+    if (!gEmail || gEmail === '') return { success: false };
+    var props = PropertiesService.getScriptProperties();
+    var key = 'rmb_' + gEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    var val = props.getProperty(key);
+    if (val) {
+      var obj = JSON.parse(val);
+      return { success: true, email: obj.e || '', password: obj.p || '' };
+    }
+    return { success: false };
+  } catch(e) {
+    return { success: false };
+  }
+}
+
+function saveRememberMe_(email, password) {
+  try {
+    var gEmail = Session.getActiveUser().getEmail();
+    if (!gEmail || gEmail === '') return; // Can't identify user - skip
+    var props = PropertiesService.getScriptProperties();
+    var key = 'rmb_' + gEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    props.setProperty(key, JSON.stringify({ e: email, p: password }));
+  } catch(e) {}
+}
+
+function clearRememberMe_() {
+  try {
+    var gEmail = Session.getActiveUser().getEmail();
+    if (!gEmail || gEmail === '') return;
+    var props = PropertiesService.getScriptProperties();
+    var key = 'rmb_' + gEmail.replace(/[^a-zA-Z0-9]/g, '_');
+    props.deleteProperty(key);
+  } catch(e) {}
+}
+
+function updateRememberMe(email, password) {
+  try {
+    saveRememberMe_(email, password);
+    return { success: true };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function changeOwnPassword(params) {
+  try {
+    var email = String(params.email || '').toLowerCase().trim();
+    var curPw = String(params.currentPassword || '').trim();
+    var newPw = String(params.newPassword || '').trim();
+    if (!email || !curPw || !newPw) return { error: 'All fields are required' };
+    if (newPw.length < 4) return { error: 'New password must be at least 4 characters' };
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = headers.indexOf('email');
+    var pwCol = headers.indexOf('password');
+    if (emailCol === -1 || pwCol === -1) return { error: 'Invalid ACCESS sheet' };
+    
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailCol] || '').toLowerCase().trim() === email) {
+        if (String(data[i][pwCol] || '').trim() !== curPw) return { error: 'Current password is incorrect' };
+        sheet.getRange(i + 1, pwCol + 1).setValue(newPw);
+        // Update saved remember-me
+        saveRememberMe_(email, newPw);
+        return { success: true };
+      }
+    }
+    return { error: 'User not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+/******************** ADMIN PANEL & ROLES ********************/
+
+function getUserPermissions(params) {
+  try {
+    var role = String(params && params.role || 'user').toLowerCase().trim();
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    if (role === 'admin') return { role: 'admin', pages: 'all' };
+    
+    var sheet = ss.getSheetByName('ROLES');
+    if (!sheet) return { role: role, pages: 'all' };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { role: role, pages: 'all' };
+    
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var roleCol = headers.indexOf('role');
+    if (roleCol === -1) return { role: role, pages: 'all' };
+    
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][roleCol] || '').trim().toLowerCase() === role) {
+        var allowed = [];
+        for (var c = 0; c < headers.length; c++) {
+          if (c === roleCol) continue;
+          var pageId = headers[c];
+          var val = String(data[r][c] || '').trim().toUpperCase();
+          if (pageId && (val === 'TRUE' || val === 'YES' || val === '1')) {
+            allowed.push(pageId);
+          }
+        }
+        return { role: role, pages: allowed };
+      }
+    }
+    
+    return { role: role, pages: 'all' };
+  } catch(e) {
+    return { role: 'user', pages: 'all', error: e.message };
+  }
+}
+
+function getDefaultPages_() {
+  return [
+    { id: 'deposit', name: 'Deposit Conversion', icon: '💰' },
+    { id: 'retention', name: 'Retention Rate', icon: '📊' },
+    { id: 'kpi', name: 'KPI Dashboard', icon: '📈' },
+    { id: 'segments', name: 'Segment Share', icon: '🧩' },
+    { id: 'bonus', name: 'Bonus Report', icon: '🎁' },
+    { id: 'payments', name: 'Payments', icon: '💳' },
+    { id: 'traffic', name: 'Traffic Analytics', icon: '🚦' },
+    { id: 'closure', name: 'Closure Analytics', icon: '🔒' },
+    { id: 'sms_tool', name: 'SMS Tool', icon: '📱' },
+    { id: 'qa_board', name: 'QA Board', icon: '📊' },
+    { id: 'kpi_board', name: 'KPI Board', icon: '🎯' },
+    { id: 'quality_card', name: 'Quality Card', icon: '💎' },
+    { id: 'admin_panel', name: 'Admin Panel', icon: '⚙️' },
+    { id: 'bonus_sim', name: 'Bonus Simulator', icon: '🎰' },
+    { id: 'vip', name: 'VIP Dashboard', icon: '📊' },
+    { id: 'profiling', name: 'Player Profiling', icon: '👑' },
+    { id: 'bonus_calc', name: 'Bonus Calculator', icon: '💎' },
+    { id: 'home', name: 'Home', icon: '🏠' },
+    { id: 'calendar', name: 'Calendar', icon: '📅' },
+    { id: 'lists', name: 'Player Lists', icon: '📋' },
+    { id: 'timetable', name: 'Timetable', icon: '🗓️' },
+    { id: 'timetable_settings', name: 'Timetable Settings', icon: '⚙️🗓️' }
+  ];
+}
+
+function getAdminPanelData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var result = { users: [], pages: [], allRoles: [], rolePermissions: {} };
+    
+    var accessSheet = ss.getSheetByName('ACCESS');
+    if (accessSheet) {
+      var aData = accessSheet.getDataRange().getValues();
+      var aHeaders = aData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+      var seenRoles = {};
+      
+      for (var i = 1; i < aData.length; i++) {
+        var user = {};
+        aHeaders.forEach(function(h, idx) { user[h] = String(aData[i][idx] || '').trim(); });
+        user._row = i + 1;
+        result.users.push(user);
+        if (user.role) seenRoles[user.role.toLowerCase()] = true;
+      }
+      result.allRoles = Object.keys(seenRoles).sort();
+    }
+    if (result.allRoles.length === 0) result.allRoles = ['admin', 'user'];
+    
+    var defaultPages = getDefaultPages_();
+    result.pages = defaultPages;
+    
+    // Read/Create ROLES sheet (rows=roles, cols=pages)
+    var rolesSheet = ss.getSheetByName('ROLES');
+    
+    if (rolesSheet) {
+      var firstHeader = String(rolesSheet.getRange(1, 1).getValue()).trim().toLowerCase();
+      if (firstHeader !== 'role') {
+        Logger.log('ROLES sheet invalid (first header: ' + firstHeader + '), rebuilding...');
+        ss.deleteSheet(rolesSheet);
+        rolesSheet = null;
+      }
+    }
+    
+    if (!rolesSheet) {
+      rolesSheet = ss.insertSheet('ROLES');
+      var pageIds = defaultPages.map(function(p) { return p.id; });
+      var headers = ['role'].concat(pageIds);
+      var allData = [headers];
+      
+      result.allRoles.forEach(function(roleName) {
+        var row = [roleName];
+        pageIds.forEach(function() { row.push('TRUE'); });
+        allData.push(row);
+      });
+      
+      // Write all at once (faster + no bugs)
+      rolesSheet.getRange(1, 1, allData.length, allData[0].length).setValues(allData);
+      rolesSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
+      rolesSheet.autoResizeColumns(1, headers.length);
+      Logger.log('ROLES sheet created: ' + headers.length + ' cols, ' + result.allRoles.length + ' roles');
+    }
+    
+    var rData = rolesSheet.getDataRange().getValues();
+    var rHeaders = rData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var roleColIdx = rHeaders.indexOf('role');
+    
+    // Add missing page columns (avoiding duplicates)
+    var existingPageMap = {};
+    rHeaders.forEach(function(h) { if (h && h !== 'role') existingPageMap[h] = true; });
+    defaultPages.forEach(function(dp) {
+      if (!existingPageMap[dp.id]) {
+        var lastCol = rolesSheet.getLastColumn() + 1;
+        rolesSheet.getRange(1, lastCol).setValue(dp.id).setFontWeight('bold');
+        for (var r = 2; r <= rolesSheet.getLastRow(); r++) {
+          rolesSheet.getRange(r, lastCol).setValue('TRUE');
+        }
+        existingPageMap[dp.id] = true;
+      }
+    });
+    
+    // Add missing role rows
+    var existingRoles = [];
+    for (var r = 1; r < rData.length; r++) {
+      existingRoles.push(String(rData[r][roleColIdx] || '').trim().toLowerCase());
+    }
+    result.allRoles.forEach(function(roleName) {
+      if (existingRoles.indexOf(roleName) === -1) {
+        var row = [roleName];
+        for (var c = 1; c < rHeaders.length; c++) row.push('TRUE');
+        rolesSheet.appendRow(row);
+      }
+    });
+    
+    // Re-read
+    rData = rolesSheet.getDataRange().getValues();
+    rHeaders = rData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    
+    // Merge roles from ROLES sheet into allRoles
+    for (var r = 1; r < rData.length; r++) {
+      var rn = String(rData[r][roleColIdx] || '').trim().toLowerCase();
+      if (rn && result.allRoles.indexOf(rn) === -1) result.allRoles.push(rn);
+    }
+    result.allRoles.sort();
+    
+    for (var r = 1; r < rData.length; r++) {
+      var roleName = String(rData[r][roleColIdx] || '').trim().toLowerCase();
+      if (!roleName) continue;
+      result.rolePermissions[roleName] = {};
+      for (var c = 0; c < rHeaders.length; c++) {
+        if (c === roleColIdx) continue;
+        var pageId = rHeaders[c];
+        if (!pageId) continue;
+        var val = String(rData[r][c] || '').trim().toUpperCase();
+        result.rolePermissions[roleName][pageId] = (val === 'TRUE' || val === 'YES' || val === '1');
+      }
+    }
+    
+    result.success = true;
+    return result;
+    
+  } catch(e) {
+    Logger.log('getAdminPanelData error: ' + e);
+    return { error: e.message, users: [], pages: [], allRoles: [] };
+  }
+}
+
+function saveRolePermissions(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ROLES');
+    if (!sheet) return { error: 'ROLES sheet not found' };
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var roleColIdx = headers.indexOf('role');
+    
+    // params.permissions = { roleName: { pageId: true/false, ... }, ... }
+    var perms = params.permissions || {};
+    
+    Object.keys(perms).forEach(function(roleName) {
+      var rn = roleName.toLowerCase();
+      for (var r = 1; r < data.length; r++) {
+        if (String(data[r][roleColIdx] || '').trim().toLowerCase() === rn) {
+          var rolePerms = perms[roleName];
+          Object.keys(rolePerms).forEach(function(pageId) {
+            var colIdx = headers.indexOf(pageId.toLowerCase());
+            if (colIdx >= 0) {
+              sheet.getRange(r + 1, colIdx + 1).setValue(rolePerms[pageId] ? 'TRUE' : 'FALSE');
+            }
+          });
+          break;
+        }
+      }
+    });
+    
+    return { success: true };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function generateTempPassword_() {
+  return String(Math.floor(1000 + Math.random() * 9000));
+}
+
+function adminCreateUser(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    var email = String(params.email || '').trim().toLowerCase();
+    var role = String(params.role || 'user').trim().toLowerCase();
+    var manager = String(params.manager || '').trim();
+    var nickname = String(params.nickname || '').trim();
+    var password = String(params.password || generateTempPassword_()).trim();
+    if (!email) return { error: 'Email is required' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = headers.indexOf('email');
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailCol] || '').toLowerCase().trim() === email) return { error: 'User already exists' };
+    }
+    var roleCol = headers.indexOf('role');
+    var pwCol = headers.indexOf('password');
+    var mgrCol = headers.indexOf('manager');
+    var nickCol = headers.indexOf('nickname');
+    var newRow = [];
+    for (var c = 0; c < headers.length; c++) newRow.push('');
+    if (emailCol >= 0) newRow[emailCol] = email;
+    if (roleCol >= 0) newRow[roleCol] = role;
+    if (pwCol >= 0) newRow[pwCol] = password;
+    if (mgrCol >= 0) newRow[mgrCol] = manager;
+    if (nickCol >= 0) newRow[nickCol] = nickname;
+    sheet.appendRow(newRow);
+    ensureRoleInRolesSheet_(role);
+    return { success: true, password: password };
+  } catch(e) { return { error: e.message }; }
+}
+
+function adminUpdateUser(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    var row = Number(params.row);
+    if (!row || row < 2) return { error: 'Invalid row' };
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var fields = ['role', 'manager', 'nickname'];
+    fields.forEach(function(f) {
+      if (params[f] !== undefined) {
+        var col = headers.indexOf(f);
+        if (col >= 0) sheet.getRange(row, col + 1).setValue(params[f]);
+      }
+    });
+    if (params.role) ensureRoleInRolesSheet_(params.role);
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+function adminDeleteUser(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    var row = Number(params.row);
+    if (!row || row < 2) return { error: 'Invalid row' };
+    sheet.deleteRow(row);
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+function adminResetPassword(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    var row = Number(params.row);
+    var newPw = generateTempPassword_();
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var pwCol = headers.indexOf('password');
+    if (pwCol === -1) return { error: 'No password column' };
+    sheet.getRange(row, pwCol + 1).setValue(newPw);
+    return { success: true, password: newPw };
+  } catch(e) { return { error: e.message }; }
+}
+
+function adminAddRole(roleName) {
+  try {
+    var rn = String(roleName || '').trim().toLowerCase();
+    if (!rn) return { error: 'Role name is required' };
+    ensureRoleInRolesSheet_(rn);
+    return { success: true };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function adminDeleteRole(roleName) {
+  try {
+    var rn = String(roleName || '').trim().toLowerCase();
+    if (!rn) return { error: 'Role name is required' };
+    if (rn === 'admin' || rn === 'user') return { error: 'Cannot delete built-in role' };
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ROLES');
+    if (!sheet) return { error: 'ROLES sheet not found' };
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var roleColIdx = headers.indexOf('role');
+    
+    for (var r = data.length - 1; r >= 1; r--) {
+      if (String(data[r][roleColIdx] || '').trim().toLowerCase() === rn) {
+        sheet.deleteRow(r + 1);
+        return { success: true };
+      }
+    }
+    return { error: 'Role not found' };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+// =================== SERVICE SHEETS CRUD ===================
+var SERVICE_SHEETS = {
+  'type': { names: ['TYPE', '[TYPE]'], label: 'Type Mapping' },
+  'manager': { names: ['MANAGER', '[MANAGER]'], label: 'Manager Mapping' },
+  'vocabulary': { names: ['VOCABULARY'], label: 'Vocabulary' },
+  'tags': { names: ['TAGS'], label: 'Tags' },
+  'sms_settings': { names: ['SMS_SETTINGS'], label: 'SMS Settings' }
+};
+
+function getServiceSheet(key) {
+  try {
+    var cfg = SERVICE_SHEETS[key];
+    if (!cfg) return { error: 'Unknown sheet: ' + key };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = null;
+    for (var i = 0; i < cfg.names.length; i++) {
+      sheet = ss.getSheetByName(cfg.names[i]);
+      if (sheet) break;
+    }
+    if (!sheet) return { success: true, headers: [], rows: [], sheetName: cfg.names[0] };
+    var data = sheet.getDataRange().getValues();
+    var headers = data.length > 0 ? data[0].map(function(h) { return String(h); }) : [];
+    var rows = [];
+    for (var r = 1; r < data.length; r++) {
+      rows.push(data[r].map(function(c) { return String(c == null ? '' : c); }));
+    }
+    return { success: true, headers: headers, rows: rows, sheetName: sheet.getName() };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function saveServiceSheetCell(key, rowIdx, colIdx, value) {
+  try {
+    var cfg = SERVICE_SHEETS[key];
+    if (!cfg) return { error: 'Unknown sheet' };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = null;
+    for (var i = 0; i < cfg.names.length; i++) {
+      sheet = ss.getSheetByName(cfg.names[i]);
+      if (sheet) break;
+    }
+    if (!sheet) return { error: 'Sheet not found' };
+    sheet.getRange(rowIdx + 2, colIdx + 1).setValue(value); // +2: header + 0-indexed
+    return { success: true };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function addServiceSheetRow(key) {
+  try {
+    var cfg = SERVICE_SHEETS[key];
+    if (!cfg) return { error: 'Unknown sheet' };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = null;
+    for (var i = 0; i < cfg.names.length; i++) {
+      sheet = ss.getSheetByName(cfg.names[i]);
+      if (sheet) break;
+    }
+    if (!sheet) {
+      sheet = ss.insertSheet(cfg.names[0]);
+      return { success: true, newRow: 0 };
+    }
+    var cols = sheet.getLastColumn() || 1;
+    var emptyRow = [];
+    for (var c = 0; c < cols; c++) emptyRow.push('');
+    sheet.appendRow(emptyRow);
+    return { success: true, newRow: sheet.getLastRow() - 2 };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function deleteServiceSheetRow(key, rowIdx) {
+  try {
+    var cfg = SERVICE_SHEETS[key];
+    if (!cfg) return { error: 'Unknown sheet' };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = null;
+    for (var i = 0; i < cfg.names.length; i++) {
+      sheet = ss.getSheetByName(cfg.names[i]);
+      if (sheet) break;
+    }
+    if (!sheet) return { error: 'Sheet not found' };
+    sheet.deleteRow(rowIdx + 2); // +2: header + 0-indexed
+    return { success: true };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function ensureRoleInRolesSheet_(roleName) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('ROLES');
+  if (!sheet) return;
+  
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+  var roleColIdx = headers.indexOf('role');
+  var rn = String(roleName).trim().toLowerCase();
+  
+  for (var r = 1; r < data.length; r++) {
+    if (String(data[r][roleColIdx] || '').trim().toLowerCase() === rn) return;
+  }
+  
+  var row = [rn];
+  for (var c = 1; c < headers.length; c++) row.push('TRUE');
+  sheet.appendRow(row);
+}
 /******************** TYPE MAPPING ********************/
 function getTypeMapping() {
   var result = { tagToType: {}, typeMapping: {}, typeToTotal: {}, totalGroups: {} };
@@ -526,202 +1576,6 @@ function getAllPlayersForFilters() {
  * Get filtered deposit counts based on filters
  * @param {Object} params - {filters: {vipType, manager, trafficType, country}}
  */
-function getFilteredDepositCounts(params) {
-  var filters = params.filters || {};
-  
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheets = ss.getSheets();
-  
-  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
-  var ftdSheets = [];
-  
-  // Find monthly FTD sheets only
-  sheets.forEach(function(sheet) {
-    var name = sheet.getName();
-    var isWeekly = weekPattern.test(name);
-    
-    if (!isWeekly && name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
-      ftdSheets.push(sheet);
-    }
-  });
-  
-  ftdSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
-  
-  var depositRanges = ['FTD', '2+', '3+', '4+', '5+', '6+', '7+', '8+', '9+', '10+', '11+', '12+'];
-  
-  var result = {
-    months: [],
-    rows: []
-  };
-  
-  // Get month names
-  ftdSheets.forEach(function(sheet) {
-    var monthName = extractMonthName(sheet.getName());
-    result.months.push(monthName);
-  });
-  
-  // For each deposit range
-  depositRanges.forEach(function(range) {
-    var row = {
-      range: range,
-      cells: []
-    };
-    
-    // For each month
-    ftdSheets.forEach(function(ftdSheet) {
-      var ftdData = getDetailedSheetData(ftdSheet);
-      
-      // Apply filters to all FTD players
-      var ftdFiltered = ftdData.filter(function(p) {
-        return matchesFilters(p, filters);
-      });
-      
-      var ftdCount = ftdFiltered.length;
-      
-      // For deposit ranges
-      if (range === 'FTD') {
-        row.cells.push({
-          count: ftdCount,
-          pct: 1.0
-        });
-      } else {
-        // Count players with deposits >= range
-        var minDeposits = parseInt(range.replace('+', ''));
-        var achievedCount = 0;
-        
-        ftdFiltered.forEach(function(player) {
-          var deposits = player.deposits || 0;
-          if (deposits >= minDeposits) {
-            achievedCount++;
-          }
-        });
-        
-        row.cells.push({
-          count: achievedCount,
-          pct: ftdCount > 0 ? achievedCount / ftdCount : 0
-        });
-      }
-    });
-    
-    result.rows.push(row);
-  });
-  
-  return result;
-}
-
-function getFilteredRetentionCounts(params) {
-  var mode = params.mode; // 'monthly' or 'weekly'
-  var filters = params.filters || {};
-  
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheets = ss.getSheets();
-  
-  var ftdSheets = [];
-  var activeSheets = [];
-  var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
-  
-  // Find sheets based on mode
-  sheets.forEach(function(sheet) {
-    var name = sheet.getName();
-    var isWeekly = weekPattern.test(name);
-    
-    if ((mode === 'weekly' && isWeekly) || (mode === 'monthly' && !isWeekly)) {
-      if (name.indexOf('FTD') !== -1 && name.indexOf('ACTIVE') === -1) {
-        ftdSheets.push(sheet);
-      } else if (name.indexOf('ACTIVE') !== -1) {
-        activeSheets.push(sheet);
-      }
-    }
-  });
-  
-  ftdSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
-  
-  activeSheets.sort(function(a, b) {
-    return sheets.indexOf(a) - sheets.indexOf(b);
-  });
-  
-  var result = {};
-  
-  // Set correct field names based on mode
-  if (mode === 'weekly') {
-    result.weeks = [];
-    result.rows = [];
-  } else {
-    result.months = [];
-    result.rows = [];
-  }
-  
-  // Get period names
-  activeSheets.forEach(function(sheet) {
-    var periodName = mode === 'weekly' ? extractWeekName(sheet.getName()) : extractMonthName(sheet.getName());
-    if (mode === 'weekly') {
-      result.weeks.push(periodName);
-    } else {
-      result.months.push(periodName);
-    }
-  });
-  
-  // Calculate filtered retention for each FTD period
-  ftdSheets.forEach(function(ftdSheet, ftdIdx) {
-    var ftdName = ftdSheet.getName();
-    var periodName = mode === 'weekly' ? extractWeekName(ftdName) : extractMonthName(ftdName);
-    
-    var ftdData = getDetailedSheetData(ftdSheet);
-    
-    // Apply filters to FTD players
-    var ftdFiltered = ftdData.filter(function(p) {
-      return matchesFilters(p, filters);
-    });
-    
-    var ftdCount = ftdFiltered.length;
-    var ftdPlayerIds = ftdFiltered.map(function(p) { return p.id; });
-    
-    var row = {};
-    if (mode === 'weekly') {
-      row.week = periodName;
-    } else {
-      row.month = periodName;
-    }
-    row.ftdCount = ftdCount;
-    row.retention = [];
-    
-    // Calculate retention for each subsequent ACTIVE period
-    for (var i = ftdIdx; i < activeSheets.length; i++) {
-      var activeSheet = activeSheets[i];
-      var activeData = getDetailedSheetData(activeSheet);
-      
-      // Filter active players
-      var activeFiltered = activeData.filter(function(p) {
-        return matchesFilters(p, filters);
-      });
-      
-      var retainedCount = 0;
-      ftdPlayerIds.forEach(function(ftdId) {
-        var found = activeFiltered.some(function(p) {
-          return p.id === ftdId;
-        });
-        if (found) retainedCount++;
-      });
-      
-      row.retention.push({
-        count: retainedCount,
-        pct: ftdCount > 0 ? retainedCount / ftdCount : 0
-      });
-    }
-    
-    result.rows.push(row);
-  });
-  
-  return result;
-}
-
-/**
- * Check if player matches filters
- */
 function matchesFilters(player, filters) {
   // VIP Type filter
   if (filters.vipType && filters.vipType.length > 0) {
@@ -900,7 +1754,424 @@ function extractWeekName(sheetName) {
 }
 
 
+function normalizeGroupId(id) {
+  return String(id).trim();
+}
+
+function parseGroupIdsFromRaw(raw) {
+  var rawStr = String(raw).trim();
+  if (!rawStr || rawStr === '' || rawStr === 'undefined' || rawStr === 'null') return [];
+  var ids = [];
+  try {
+    if (rawStr.charAt(0) === '[') {
+      ids = JSON.parse(rawStr.replace(/'/g, '"'));
+    } else if (rawStr.indexOf(',') !== -1) {
+      ids = rawStr.split(',').map(function(s) { return s.trim().replace(/["']/g, ''); });
+    } else {
+      ids = [rawStr.replace(/["']/g, '').trim()];
+    }
+  } catch(e) {
+    ids = rawStr.replace(/[\[\]"']/g, '').split(',').map(function(s) { return s.trim(); });
+  }
+  return ids.map(function(id) { return String(id).trim(); }).filter(function(id) { return id && id !== '' && id !== 'undefined'; });
+}
+
+// Robust group ID matching: compares both string and numeric forms
+function groupIdMatch(playerIds, targetIds) {
+  // Build lookup with both original and numeric forms
+  var playerSet = {};
+  playerIds.forEach(function(id) {
+    var s = String(id).trim();
+    playerSet[s] = true;
+    // numeric form (no leading zeros)
+    var n = s.replace(/^0+/, '') || '0';
+    playerSet[n] = true;
+    // padded to 5 digits
+    if (/^\d+$/.test(s)) playerSet[('00000' + parseInt(s, 10)).slice(-5)] = true;
+  });
+  
+  for (var i = 0; i < targetIds.length; i++) {
+    var tid = String(targetIds[i]).trim();
+    if (playerSet[tid]) return true;
+    var tn = tid.replace(/^0+/, '') || '0';
+    if (playerSet[tn]) return true;
+    if (/^\d+$/.test(tid) && playerSet[('00000' + parseInt(tid, 10)).slice(-5)]) return true;
+  }
+  return false;
+}
+
+function getRetentionV2Data(params) {
+  try {
+    var mode = params && params.mode || 'weekly_ftd';
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // 1. Read GROUPS sheet
+    var groupsSheet = ss.getSheetByName('GROUPS');
+    if (!groupsSheet) return { error: 'GROUPS sheet not found' };
+    
+    var gData = groupsSheet.getDataRange().getValues();
+    var gHeaders = gData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var gGroupCol = gHeaders.indexOf('group');
+    var gNameCol = gHeaders.indexOf('name');
+    var gRateCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('rate') !== -1) { gRateCol = gi; break; }
+    }
+    var gTypeCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('type') !== -1) { gTypeCol = gi; break; }
+    }
+    if (gGroupCol === -1 || gNameCol === -1) return { error: 'GROUPS sheet missing GROUP or NAME columns' };
+    
+    var allGroups = [];
+    for (var r = 1; r < gData.length; r++) {
+      var rawGroup = String(gData[r][gGroupCol] || '').trim();
+      var name = String(gData[r][gNameCol] || '').trim();
+      var rate = gRateCol >= 0 ? String(gData[r][gRateCol] || '').trim() : '';
+      var rType = gTypeCol >= 0 ? String(gData[r][gTypeCol] || '').trim().toLowerCase() : '';
+      if (!name) continue;
+      
+      var groupIds = parseGroupIdsFromRaw(rawGroup);
+      
+      var nameLower = name.toLowerCase();
+      var isFTD = nameLower.indexOf('ftd') !== -1;
+      var isActive = nameLower.indexOf('active') !== -1;
+      if (!isFTD && !isActive) continue;
+      
+      var orderMatch = name.match(/\((\d+)\s*week\)/i) || name.match(/\((\d+)\s*month\)/i);
+      var order = orderMatch ? parseInt(orderMatch[1]) : 999;
+      var monthMatch = name.match(/\(([A-Z]+)\)/i);
+      var monthName = monthMatch ? monthMatch[1] : '';
+      
+      allGroups.push({ groupIds: groupIds, name: name, rate: rate, retType: rType || 'week', isFTD: isFTD, isActive: isActive, order: order, monthName: monthName });
+    }
+    
+    var isWeekly = mode.indexOf('weekly') !== -1;
+    var isMom = mode.indexOf('mom') !== -1;
+    var filterType = isWeekly ? 'week' : 'month';
+    
+    var ftdGroups = allGroups.filter(function(g) { return g.retType === filterType && g.isFTD; });
+    var activeGroups = allGroups.filter(function(g) { return g.retType === filterType && g.isActive; });
+    ftdGroups.sort(function(a, b) { return a.order - b.order; });
+    activeGroups.sort(function(a, b) { return a.order - b.order; });
+    
+    // 2. Read GENERAL DASHBOARD — emails, groups, country, tags, stag
+    var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+    if (!gdSheet) return { error: 'GENERAL DASHBOARD sheet not found' };
+    
+    var gdData = gdSheet.getDataRange().getValues();
+    var gdH = gdData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = gdH.indexOf('email');
+    var groupsCol = gdH.indexOf('groups');
+    var countryCol = gdH.indexOf('country');
+    var tagsCol = gdH.indexOf('tags');
+    var stagCol = gdH.indexOf('stag');
+    var disCol = gdH.indexOf('disabled');
+    if (emailCol === -1 || groupsCol === -1) return { error: 'GENERAL DASHBOARD missing email or groups column' };
+    
+    // Financial columns for modal data
+    var depSumCol = -1, cashSumCol = -1, depCntCol = -1, inoutCol = -1;
+    for (var hi = 0; hi < gdH.length; hi++) {
+      if (gdH[hi].indexOf('deposit_sum') !== -1 && gdH[hi].indexOf('promo') === -1 && depSumCol === -1) depSumCol = hi;
+      if (gdH[hi].indexOf('cashout_sum') !== -1 && cashSumCol === -1) cashSumCol = hi;
+      if (gdH[hi] === 'lifetime_deposit_count_total' || gdH[hi] === 'deposit_count_total') depCntCol = hi;
+      if (gdH[hi] === 'inout' || gdH[hi] === 'in_out' || gdH[hi] === 'lifetime_inout') inoutCol = hi;
+    }
+    
+    var trafficMapping = getTrafficTypeMapping();
+    
+    // Build player data
+    var playerGroups = {};  // email -> group ids array
+    var playerDetails = {}; // email -> full player details for client-side modals
+    
+    for (var p = 1; p < gdData.length; p++) {
+      var email = String(gdData[p][emailCol] || '').trim().toLowerCase();
+      if (!email) continue;
+      var rawGrp = String(gdData[p][groupsCol] || '').trim();
+      var pGroups = parseGroupIdsFromRaw(rawGrp);
+      playerGroups[email] = pGroups;
+      
+      var country = countryCol !== -1 ? String(gdData[p][countryCol] || '') : '';
+      var tags = tagsCol !== -1 ? String(gdData[p][tagsCol] || '') : '';
+      var stag = stagCol !== -1 ? String(gdData[p][stagCol] || '') : '';
+      var trafficType = '', trafficDir = '', trafficSrc = '';
+      if (stag) {
+        var info = trafficMapping[stag.split('_')[0]];
+        if (info && typeof info === 'object') { trafficType = info.type || ''; trafficDir = info.direction || ''; trafficSrc = info.source || ''; }
+        else if (info) trafficType = String(info);
+      }
+      var depS = depSumCol !== -1 ? Number(gdData[p][depSumCol]) || 0 : 0;
+      var cashS = cashSumCol !== -1 ? Number(gdData[p][cashSumCol]) || 0 : 0;
+      playerDetails[email] = {
+        country: country, trafficType: trafficType, trafficDirection: trafficDir, trafficSource: trafficSrc,
+        tags: tags, status: disCol !== -1 ? String(gdData[p][disCol] || 'none') : 'none',
+        deposits: depS, cashouts: cashS,
+        inout: inoutCol !== -1 ? Number(gdData[p][inoutCol]) || 0 : (depS - cashS),
+        actualDeposits: depCntCol !== -1 ? Number(gdData[p][depCntCol]) || 0 : 0
+      };
+    }
+    
+    Logger.log('RetV2: ' + Object.keys(playerGroups).length + ' players loaded');
+    
+    // DEBUG: Log sample data to diagnose matching
+    var samplePlayerEmails = Object.keys(playerGroups).slice(0, 3);
+    samplePlayerEmails.forEach(function(e) {
+      Logger.log('DEBUG player "' + e + '" groups: [' + playerGroups[e].join(', ') + ']');
+    });
+    Logger.log('DEBUG FTD groups to match:');
+    ftdGroups.slice(0, 3).forEach(function(g) {
+      Logger.log('  "' + g.name + '" groupIds: [' + g.groupIds.join(', ') + ']');
+    });
+    Logger.log('DEBUG ACTIVE groups to match:');
+    activeGroups.slice(0, 3).forEach(function(g) {
+      Logger.log('  "' + g.name + '" groupIds: [' + g.groupIds.join(', ') + ']');
+    });
+    
+    // 3. Build player email arrays per group
+    function getEmailsInGroup(groupDef) {
+      var result = [];
+      var gids = groupDef.groupIds;
+      for (var email in playerGroups) {
+        if (groupIdMatch(playerGroups[email], gids)) {
+          result.push(email);
+        }
+      }
+      return result;
+    }
+    
+    var ftdSets = ftdGroups.map(function(g) { return { def: g, emails: getEmailsInGroup(g) }; });
+    var activeSets = activeGroups.map(function(g) { return { def: g, emails: getEmailsInGroup(g) }; });
+    
+    // DEBUG: Log how many players matched each group
+    ftdSets.forEach(function(s) {
+      Logger.log('DEBUG FTD "' + s.def.name + '" (ids: ' + s.def.groupIds.join(',') + '): ' + s.emails.length + ' players matched');
+    });
+    activeSets.forEach(function(s) {
+      Logger.log('DEBUG ACTIVE "' + s.def.name + '" (ids: ' + s.def.groupIds.join(',') + '): ' + s.emails.length + ' players matched');
+    });
+    // DEBUG: Check if ANY player has ANY of the GROUPS IDs
+    var allTargetIds = [];
+    ftdGroups.concat(activeGroups).forEach(function(g) {
+      g.groupIds.forEach(function(id) { allTargetIds.push(id); });
+    });
+    var matchCount = 0;
+    for (var email in playerGroups) {
+      if (groupIdMatch(playerGroups[email], allTargetIds)) matchCount++;
+    }
+    Logger.log('DEBUG TOTAL players matching ANY group: ' + matchCount + ' out of ' + Object.keys(playerGroups).length);
+    Logger.log('DEBUG All target group IDs: [' + allTargetIds.join(', ') + ']');
+    // Sample of actual player group IDs (unique)
+    var samplePGIds = {};
+    var ct = 0;
+    for (var email in playerGroups) {
+      if (ct > 50) break;
+      playerGroups[email].forEach(function(id) { samplePGIds[id] = true; });
+      ct++;
+    }
+    Logger.log('DEBUG Sample player group IDs: [' + Object.keys(samplePGIds).sort().join(', ') + ']');
+    
+    // 4. Build result with pre-calculated retention + raw email arrays
+    var srcEmailArrays = [];
+    var activeEmailArrays = [];
+    activeSets.forEach(function(a) { activeEmailArrays.push(a.emails); });
+    
+    var sourceRows = isMom ? activeSets : ftdSets;
+    var result;
+    
+    if (isWeekly) {
+      result = { weeks: [], rows: [], srcEmails: [], activeEmails: activeEmailArrays, playerDetails: playerDetails };
+      activeSets.forEach(function(a) { result.weeks.push(a.def.rate); });
+      
+      sourceRows.forEach(function(src, srcIdx) {
+        var srcEmails = src.emails;
+        srcEmailArrays.push(srcEmails);
+        var srcSet = {};
+        srcEmails.forEach(function(e) { srcSet[e] = true; });
+        
+        var row = { week: src.def.rate, ftdCount: srcEmails.length, retention: [] };
+        for (var i = 0; i < activeSets.length; i++) {
+          if (i < srcIdx) { row.retention.push({ count: 0, pct: 0 }); continue; }
+          var retainedCount = 0;
+          activeSets[i].emails.forEach(function(e) { if (srcSet[e]) retainedCount++; });
+          row.retention.push({ count: retainedCount, pct: srcEmails.length > 0 ? retainedCount / srcEmails.length : 0 });
+        }
+        result.rows.push(row);
+      });
+      result.srcEmails = srcEmailArrays;
+    } else {
+      result = { months: [], rows: [], srcEmails: [], activeEmails: activeEmailArrays, playerDetails: playerDetails };
+      activeSets.forEach(function(a) { result.months.push(a.def.monthName || a.def.rate); });
+      
+      sourceRows.forEach(function(src, srcIdx) {
+        var srcEmails = src.emails;
+        srcEmailArrays.push(srcEmails);
+        var srcSet = {};
+        srcEmails.forEach(function(e) { srcSet[e] = true; });
+        
+        var row = { month: src.def.monthName || src.def.rate, ftdCount: srcEmails.length, retention: [] };
+        for (var i = srcIdx; i < activeSets.length; i++) {
+          var retainedCount = 0;
+          activeSets[i].emails.forEach(function(e) { if (srcSet[e]) retainedCount++; });
+          row.retention.push({ count: retainedCount, pct: srcEmails.length > 0 ? retainedCount / srcEmails.length : 0 });
+        }
+        result.rows.push(row);
+      });
+      result.srcEmails = srcEmailArrays;
+    }
+    
+    return result;
+  } catch(e) {
+    Logger.log('RetV2 error: ' + e.message);
+    return { error: e.message };
+  }
+}
+
 /******************** DEPOSIT CONVERSION ********************/
+
+function getCellPlayersRetentionV2(params) {
+  try {
+    var srcLabel = params.srcLabel;   // period label e.g. "05.01 - 11.01"
+    var tgtLabel = params.tgtLabel;   // active period label
+    var mode = params.mode || 'weekly_ftd';
+    var isMom = mode.indexOf('mom') !== -1;
+    var isWeekly = mode.indexOf('weekly') !== -1;
+    var filterType = isWeekly ? 'week' : 'month';
+    
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    // 1. Read GROUPS sheet to find src/tgt group IDs
+    var groupsSheet = ss.getSheetByName('GROUPS');
+    if (!groupsSheet) return { error: 'GROUPS sheet not found' };
+    
+    var gData = groupsSheet.getDataRange().getValues();
+    var gHeaders = gData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var gGroupCol = gHeaders.indexOf('group');
+    var gNameCol = gHeaders.indexOf('name');
+    var gRateCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('rate') !== -1) { gRateCol = gi; break; }
+    }
+    var gTypeCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('type') !== -1) { gTypeCol = gi; break; }
+    }
+    
+    
+    var srcGroupIds = null, tgtGroupIds = null;
+    
+    for (var r = 1; r < gData.length; r++) {
+      var name = String(gData[r][gNameCol] || '').trim();
+      var rate = gRateCol >= 0 ? String(gData[r][gRateCol] || '').trim() : '';
+      var rType = gTypeCol >= 0 ? String(gData[r][gTypeCol] || '').trim().toLowerCase() : 'week';
+      var rawGroup = String(gData[r][gGroupCol] || '').trim();
+      var nameLower = name.toLowerCase();
+      if (rType !== filterType) continue;
+      
+      // Match source
+      var isSrcType = isMom ? (nameLower.indexOf('active') !== -1) : (nameLower.indexOf('ftd') !== -1);
+      if (isSrcType && rate === srcLabel) {
+        srcGroupIds = parseGroupIdsFromRaw(rawGroup);
+      }
+      // Match target (always ACTIVE)
+      if (nameLower.indexOf('active') !== -1 && rate === tgtLabel) {
+        tgtGroupIds = parseGroupIdsFromRaw(rawGroup);
+      }
+    }
+    
+    if (!srcGroupIds) return { error: 'Source group not found for: ' + srcLabel };
+    if (!tgtGroupIds) return { error: 'Target group not found for: ' + tgtLabel };
+    
+    // 2. Read GENERAL DASHBOARD
+    var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+    if (!gdSheet) return { error: 'GENERAL DASHBOARD not found' };
+    
+    var gdData = gdSheet.getDataRange().getValues();
+    var gdH = gdData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    
+    var eIdx = gdH.indexOf('email');
+    var cIdx = gdH.indexOf('country');
+    var grpIdx = gdH.indexOf('groups');
+    var disIdx = gdH.indexOf('disabled');
+    var fnIdx = gdH.indexOf('first_name');
+    var lnIdx = gdH.indexOf('last_name');
+    var tagIdx = gdH.indexOf('tags');
+    
+    // Find deposit/financial columns
+    var depSumIdx = -1, cashSumIdx = -1, depCntIdx = -1, inoutIdx = -1, stagIdx = -1;
+    for (var h = 0; h < gdH.length; h++) {
+      if (gdH[h].indexOf('deposit_sum') !== -1 && gdH[h].indexOf('promo') === -1 && depSumIdx === -1) depSumIdx = h;
+      if (gdH[h].indexOf('cashout_sum') !== -1 && cashSumIdx === -1) cashSumIdx = h;
+      if (gdH[h] === 'lifetime_deposit_count_total' || gdH[h] === 'deposit_count_total') depCntIdx = h;
+      if (gdH[h] === 'inout' || gdH[h] === 'in_out') inoutIdx = h;
+      if (gdH[h] === 'stag') stagIdx = h;
+    }
+    
+    var trafficMapping = getTrafficTypeMapping();
+    
+    // Build player data
+    function playerFromRow(row) {
+      var stag = stagIdx !== -1 ? String(row[stagIdx] || '') : '';
+      var tType = '', tDir = '', tSrc = '';
+      if (stag) {
+        var info = trafficMapping[stag.split('_')[0]];
+        if (info && typeof info === 'object') { tType = info.type || ''; tDir = info.direction || ''; tSrc = info.source || ''; }
+        else if (info) tType = String(info);
+      }
+      var depS = depSumIdx !== -1 ? Number(row[depSumIdx]) || 0 : 0;
+      var cashS = cashSumIdx !== -1 ? Number(row[cashSumIdx]) || 0 : 0;
+      return {
+        id: String(row[eIdx] || '').trim().toLowerCase(),
+        email: eIdx !== -1 ? String(row[eIdx] || '') : '',
+        country: cIdx !== -1 ? String(row[cIdx] || '') : '',
+        status: disIdx !== -1 ? String(row[disIdx] || 'none') : 'none',
+        tags: tagIdx !== -1 ? String(row[tagIdx] || '') : '',
+        trafficType: tType, trafficDirection: tDir, trafficSource: tSrc,
+        actualDeposits: depCntIdx !== -1 ? Number(row[depCntIdx]) || 0 : 0,
+        depositSum: depS,
+        cashoutSum: cashS,
+        inout: inoutIdx !== -1 ? Number(row[inoutIdx]) || 0 : (depS - cashS)
+      };
+    }
+    
+    // Find source and target players
+    var srcPlayers = {};  // email -> row data
+    var tgtEmails = {};
+    
+    for (var p = 1; p < gdData.length; p++) {
+      var email = eIdx !== -1 ? String(gdData[p][eIdx] || '').trim().toLowerCase() : '';
+      if (!email) continue;
+      var pGroups = grpIdx !== -1 ? parseGroupIdsFromRaw(String(gdData[p][grpIdx] || '')) : [];
+      
+      var inSrc = groupIdMatch(pGroups, srcGroupIds);
+      var inTgt = groupIdMatch(pGroups, tgtGroupIds);
+      
+      if (inSrc) srcPlayers[email] = gdData[p];
+      if (inTgt) tgtEmails[email] = true;
+    }
+    
+    var achieved = [];
+    var dropped = [];
+    
+    for (var email in srcPlayers) {
+      var pData = playerFromRow(srcPlayers[email]);
+      if (tgtEmails[email]) {
+        achieved.push(pData);
+      } else {
+        dropped.push(pData);
+      }
+    }
+    
+    return {
+      achieved: achieved,
+      dropped: dropped,
+      week: srcLabel + ' → ' + tgtLabel,
+      range: 'Retention V2',
+      total: Object.keys(srcPlayers).length
+    };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
 
 function getTrafficTypeMapping() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1177,6 +2448,146 @@ function getWeeklyRetentionMoMData() {
   });
   
   return result;
+}
+
+function getDepositConversionV2Data(params) {
+  try {
+    var mode = params && params.mode || 'monthly';
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    
+    var groupsSheet = ss.getSheetByName('GROUPS');
+    if (!groupsSheet) return { error: 'GROUPS sheet not found' };
+    
+    var gData = groupsSheet.getDataRange().getValues();
+    var gHeaders = gData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var gGroupCol = gHeaders.indexOf('group');
+    var gNameCol = gHeaders.indexOf('name');
+    var gRateCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('rate') !== -1) { gRateCol = gi; break; }
+    }
+    var gTypeCol = -1;
+    for (var gi = 0; gi < gHeaders.length; gi++) {
+      if (gHeaders[gi].indexOf('retention') !== -1 && gHeaders[gi].indexOf('type') !== -1) { gTypeCol = gi; break; }
+    }
+    
+    var filterType = mode === 'weekly' ? 'week' : 'month';
+    var ftdGroups = [];
+    
+    for (var r = 1; r < gData.length; r++) {
+      var name = String(gData[r][gNameCol] || '').trim();
+      var rawGroup = String(gData[r][gGroupCol] || '').trim();
+      var rate = gRateCol >= 0 ? String(gData[r][gRateCol] || '').trim() : '';
+      var rType = gTypeCol >= 0 ? String(gData[r][gTypeCol] || '').trim().toLowerCase() : 'week';
+      if (rType !== filterType) continue;
+      if (name.toLowerCase().indexOf('ftd') === -1) continue;
+      
+      var groupIds = parseGroupIdsFromRaw(rawGroup);
+      var orderMatch = name.match(/\((\d+)\s*(?:week|month)\)/i);
+      var order = orderMatch ? parseInt(orderMatch[1]) : 999;
+      var monthMatch = name.match(/\(([A-Z]+)\)/i);
+      
+      ftdGroups.push({
+        groupIds: groupIds, name: name, rate: rate,
+        order: order, monthName: monthMatch ? monthMatch[1] : rate
+      });
+    }
+    
+    ftdGroups.sort(function(a, b) { return a.order - b.order; });
+    
+    var gdSheet = ss.getSheetByName('GENERAL DASHBOARD');
+    if (!gdSheet) return { error: 'GENERAL DASHBOARD not found' };
+    
+    var gdData = gdSheet.getDataRange().getValues();
+    var gdH = gdData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailIdx = gdH.indexOf('email');
+    var groupsIdx = gdH.indexOf('groups');
+    var countryCol = gdH.indexOf('country');
+    var tagsCol = gdH.indexOf('tags');
+    var stagCol = gdH.indexOf('stag');
+    var disCol = gdH.indexOf('disabled');
+    var depCntIdx = -1, depSumCol = -1, cashSumCol = -1, inoutCol = -1;
+    for (var h = 0; h < gdH.length; h++) {
+      if (gdH[h] === 'lifetime_deposit_count_total' || gdH[h] === 'deposit_count_total') depCntIdx = h;
+      if (gdH[h].indexOf('deposit_sum') !== -1 && gdH[h].indexOf('promo') === -1 && depSumCol === -1) depSumCol = h;
+      if (gdH[h].indexOf('cashout_sum') !== -1 && cashSumCol === -1) cashSumCol = h;
+      if (gdH[h] === 'inout' || gdH[h] === 'in_out' || gdH[h] === 'lifetime_inout') inoutCol = h;
+    }
+    if (emailIdx === -1 || groupsIdx === -1) return { error: 'GENERAL DASHBOARD missing email/groups' };
+    
+    var trafficMapping = getTrafficTypeMapping();
+    
+    var players = {};
+    var playerDetails = {};
+    for (var p = 1; p < gdData.length; p++) {
+      var email = String(gdData[p][emailIdx] || '').trim().toLowerCase();
+      if (!email) continue;
+      var pGroups = parseGroupIdsFromRaw(String(gdData[p][groupsIdx] || ''));
+      var depCount = depCntIdx !== -1 ? Number(gdData[p][depCntIdx]) || 0 : 0;
+      players[email] = { groups: pGroups, depositCount: depCount };
+      
+      var country = countryCol !== -1 ? String(gdData[p][countryCol] || '') : '';
+      var tags = tagsCol !== -1 ? String(gdData[p][tagsCol] || '') : '';
+      var stag = stagCol !== -1 ? String(gdData[p][stagCol] || '') : '';
+      var trafficType = '', trafficDir = '', trafficSrc = '';
+      if (stag) {
+        var info = trafficMapping[stag.split('_')[0]];
+        if (info && typeof info === 'object') { trafficType = info.type || ''; trafficDir = info.direction || ''; trafficSrc = info.source || ''; }
+        else if (info) trafficType = String(info);
+      }
+      var depS = depSumCol !== -1 ? Number(gdData[p][depSumCol]) || 0 : 0;
+      var cashS = cashSumCol !== -1 ? Number(gdData[p][cashSumCol]) || 0 : 0;
+      playerDetails[email] = {
+        country: country, trafficType: trafficType, trafficDirection: trafficDir, trafficSource: trafficSrc,
+        tags: tags, status: disCol !== -1 ? String(gdData[p][disCol] || 'none') : 'none',
+        deposits: depS, cashouts: cashS,
+        inout: inoutCol !== -1 ? Number(gdData[p][inoutCol]) || 0 : (depS - cashS),
+        actualDeposits: depCount
+      };
+    }
+    
+    var depositRanges = ['FTD','2+','3+','4+','5+','6+','7+','8+','9+','10+','11+','16+','21+','26+','31+','41+','50+'];
+    var result = { months: [], rows: [], ftdEmailArrays: [], playerDeposits: {}, playerDetails: playerDetails };
+    depositRanges.forEach(function(range) {
+      result.rows.push({ range: range, cells: [] });
+    });
+    
+    ftdGroups.forEach(function(grp) {
+      result.months.push(mode === 'weekly' ? grp.rate : grp.monthName);
+      
+      var ftdEmails = [];
+      for (var email in players) {
+        if (groupIdMatch(players[email].groups, grp.groupIds)) {
+          ftdEmails.push(email);
+        }
+      }
+      
+      result.ftdEmailArrays.push(ftdEmails);
+      
+      var ftdCount = ftdEmails.length;
+      result.rows[0].cells.push({ count: ftdCount, total: ftdCount, pct: 1.0 });
+      
+      for (var i = 1; i < depositRanges.length; i++) {
+        var min = parseInt(depositRanges[i]);
+        var count = 0;
+        ftdEmails.forEach(function(email) {
+          if (players[email].depositCount >= min) count++;
+        });
+        result.rows[i].cells.push({ count: count, total: ftdCount, pct: ftdCount > 0 ? count / ftdCount : 0 });
+      }
+    });
+    
+    // Store deposit counts per player for client-side filtering
+    for (var email in players) {
+      result.playerDeposits[email] = players[email].depositCount;
+    }
+    
+    Logger.log('DepV2 mode=' + mode + ': ' + ftdGroups.length + ' FTD groups');
+    return result;
+  } catch(e) {
+    Logger.log('DepV2 error: ' + e.message);
+    return { error: e.message };
+  }
 }
 
 function getDepositConversionData() {
@@ -1701,6 +3112,159 @@ function getCellPlayersRetentionWeekly(params) {
   };
 }
 
+/**
+ * MoM Monthly: cohort = ACTIVE month A, target = ACTIVE month B
+ * No FTD sheets involved
+ */
+function getCellPlayersRetentionMoM(params) {
+  var cohortMonth = params.ftdMonth;   // reuse param name for frontend compat
+  var activeMonth = params.activeMonth;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // Find cohort ACTIVE sheet
+  var cohortSheetName = cohortMonth.toUpperCase() + ' ACTIVE';
+  var cohortSheet = ss.getSheetByName(cohortSheetName);
+  if (!cohortSheet) {
+    cohortSheetName = cohortMonth.charAt(0).toUpperCase() + cohortMonth.slice(1).toLowerCase() + ' ACTIVE';
+    cohortSheet = ss.getSheetByName(cohortSheetName);
+  }
+  if (!cohortSheet) return { error: 'ACTIVE sheet not found: ' + cohortMonth + ' ACTIVE' };
+  
+  // Find target ACTIVE sheet
+  var activeSheetName = activeMonth.toUpperCase() + ' ACTIVE';
+  var activeSheet = ss.getSheetByName(activeSheetName);
+  if (!activeSheet) {
+    activeSheetName = activeMonth.charAt(0).toUpperCase() + activeMonth.slice(1).toLowerCase() + ' ACTIVE';
+    activeSheet = ss.getSheetByName(activeSheetName);
+  }
+  if (!activeSheet) return { error: 'ACTIVE sheet not found: ' + activeMonth + ' ACTIVE' };
+  
+  var cohortPlayersData = getDetailedSheetData(cohortSheet);
+  var activePlayersData = getDetailedSheetData(activeSheet);
+  
+  // Build active lookup
+  var activeMap = {};
+  activePlayersData.forEach(function(p) { activeMap[p.id] = p; });
+  
+  var achieved = [];
+  var dropped = [];
+  
+  cohortPlayersData.forEach(function(cohortPlayer) {
+    var activePlayer = activeMap[cohortPlayer.id];
+    if (activePlayer) {
+      achieved.push({
+        id: activePlayer.id,
+        email: activePlayer.email,
+        country: activePlayer.country,
+        status: activePlayer.status,
+        tags: activePlayer.tags || '',
+        trafficType: activePlayer.trafficType || '',
+        trafficDirection: activePlayer.trafficDirection || '',
+        trafficSource: activePlayer.trafficSource || '',
+        actualDeposits: activePlayer.depositCount,
+        depositSum: activePlayer.depositSum || 0,
+        cashoutSum: activePlayer.cashoutSum || 0,
+        inout: activePlayer.inout || 0
+      });
+    } else {
+      dropped.push({
+        id: cohortPlayer.id,
+        email: cohortPlayer.email || '',
+        country: cohortPlayer.country || '',
+        status: 'none',
+        tags: cohortPlayer.tags || '',
+        trafficType: cohortPlayer.trafficType || '',
+        trafficDirection: cohortPlayer.trafficDirection || '',
+        trafficSource: cohortPlayer.trafficSource || '',
+        actualDeposits: cohortPlayer.depositCount || 0,
+        depositSum: cohortPlayer.depositSum || 0,
+        cashoutSum: cohortPlayer.cashoutSum || 0,
+        inout: cohortPlayer.inout || 0
+      });
+    }
+  });
+  
+  return {
+    achieved: achieved,
+    dropped: dropped,
+    month: cohortMonth + ' → ' + activeMonth,
+    range: 'Retention MoM',
+    total: cohortPlayersData.length
+  };
+}
+
+/**
+ * MoM Weekly: cohort = week ACTIVE A, target = week ACTIVE B
+ * No FTD sheets involved
+ */
+function getCellPlayersRetentionWeeklyMoM(params) {
+  var cohortWeek = params.ftdWeek;   // reuse param name for frontend compat
+  var activeWeek = params.activeWeek;
+  
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  var cohortSheetName = cohortWeek + ' ACTIVE';
+  var cohortSheet = ss.getSheetByName(cohortSheetName);
+  if (!cohortSheet) return { error: 'ACTIVE sheet not found: ' + cohortSheetName };
+  
+  var activeSheetName = activeWeek + ' ACTIVE';
+  var activeSheet = ss.getSheetByName(activeSheetName);
+  if (!activeSheet) return { error: 'ACTIVE sheet not found: ' + activeSheetName };
+  
+  var cohortPlayersData = getDetailedSheetData(cohortSheet);
+  var activePlayersData = getDetailedSheetData(activeSheet);
+  
+  var activeMap = {};
+  activePlayersData.forEach(function(p) { activeMap[p.id] = p; });
+  
+  var achieved = [];
+  var dropped = [];
+  
+  cohortPlayersData.forEach(function(cohortPlayer) {
+    var activePlayer = activeMap[cohortPlayer.id];
+    if (activePlayer) {
+      achieved.push({
+        id: activePlayer.id,
+        email: activePlayer.email,
+        country: activePlayer.country,
+        status: activePlayer.status,
+        tags: activePlayer.tags || '',
+        trafficType: activePlayer.trafficType || '',
+        trafficDirection: activePlayer.trafficDirection || '',
+        trafficSource: activePlayer.trafficSource || '',
+        actualDeposits: activePlayer.depositCount,
+        depositSum: activePlayer.depositSum || 0,
+        cashoutSum: activePlayer.cashoutSum || 0,
+        inout: activePlayer.inout || 0
+      });
+    } else {
+      dropped.push({
+        id: cohortPlayer.id,
+        email: cohortPlayer.email || '',
+        country: cohortPlayer.country || '',
+        status: 'none',
+        tags: cohortPlayer.tags || '',
+        trafficType: cohortPlayer.trafficType || '',
+        trafficDirection: cohortPlayer.trafficDirection || '',
+        trafficSource: cohortPlayer.trafficSource || '',
+        actualDeposits: cohortPlayer.depositCount || 0,
+        depositSum: cohortPlayer.depositSum || 0,
+        cashoutSum: cohortPlayer.cashoutSum || 0,
+        inout: cohortPlayer.inout || 0
+      });
+    }
+  });
+  
+  return {
+    achieved: achieved,
+    dropped: dropped,
+    week: cohortWeek + ' → ' + activeWeek,
+    range: 'Retention MoM',
+    total: cohortPlayersData.length
+  };
+}
+
 function createPlayersSheet(params) {
   var title = params.title;
   var achieved = params.achieved || [];
@@ -1860,10 +3424,6 @@ function diagnosticSheets() {
     allSheets: allSheets,
     tabs: found
   };
-}
-
-function getWebAppUrl(){
-  return kpiGetWebAppUrl();
 }
 
 function kpiGetWebAppUrl() {
@@ -2792,7 +4352,8 @@ function getVIPFilterOptions() {
       managers: managersList,
       trafficTypes: trafficTypesList,
       managerMapping: managerMapping,
-      trafficMapping: flatTrafficMapping
+      trafficMapping: flatTrafficMapping,
+      trafficMappingFull: trafficMapping
     };
     
   } catch (error) {
@@ -2846,6 +4407,109 @@ function createExportSheet(sheetName, data) {
 /*************************************************
  * PLAYER PROFILING - ДОДАНО
  *************************************************/
+
+// =============================================
+// PLAYER CONTACTS
+// =============================================
+function getPlayerContacts() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PLAYER_CONTACTS');
+    if (!sheet) return { success: true, contacts: {} };
+    var data = sheet.getDataRange().getValues();
+    var contacts = {};
+    for (var i = 1; i < data.length; i++) {
+      var email = String(data[i][0] || '').trim().toLowerCase();
+      if (!email) continue;
+      // Parse date — Google Sheets may return Date object or string
+      var rawDate = data[i][1];
+      var lastDate = '';
+      if (rawDate instanceof Date && !isNaN(rawDate.getTime())) {
+        lastDate = Utilities.formatDate(rawDate, 'Europe/Kiev', 'yyyy-MM-dd');
+      } else if (rawDate) {
+        var s = String(rawDate).trim();
+        // Already YYYY-MM-DD?
+        if (/^\d{4}-\d{2}-\d{2}/.test(s)) {
+          lastDate = s.slice(0, 10);
+        } else {
+          // Try to parse and reformat
+          var d = new Date(s);
+          if (!isNaN(d.getTime())) lastDate = Utilities.formatDate(d, 'Europe/Kiev', 'yyyy-MM-dd');
+        }
+      }
+      var history = [];
+      try { history = JSON.parse(String(data[i][2] || '[]')); } catch(e) { history = []; }
+      // Sanitize history entries
+      history = history.map(function(h) {
+        if (h instanceof Date && !isNaN(h.getTime())) return Utilities.formatDate(h, 'Europe/Kiev', 'yyyy-MM-dd');
+        var hs = String(h).trim();
+        if (/^\d{4}-\d{2}-\d{2}/.test(hs)) return hs.slice(0,10);
+        var hd = new Date(hs); return (!isNaN(hd.getTime())) ? Utilities.formatDate(hd,'Europe/Kiev','yyyy-MM-dd') : null;
+      }).filter(function(h){ return h && h.length === 10; });
+      // If history empty but lastDate exists — reconstruct
+      if (!history.length && lastDate) history = [lastDate];
+      // Sort newest first
+      history.sort(function(a,b){ return b > a ? 1 : b < a ? -1 : 0; });
+      if (history.length) lastDate = history[0];
+      contacts[email] = { lastDate: lastDate, history: history };
+    }
+    return { success: true, contacts: contacts };
+  } catch(e) { return { error: e.message }; }
+}
+
+function savePlayerContactHistory(email, history) {
+  try {
+    email = String(email || '').trim().toLowerCase();
+    if (!email) return { error: 'No email' };
+    var lastDate = history && history.length ? history[0] : '';
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PLAYER_CONTACTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim().toLowerCase() === email) {
+        sheet.getRange(i+1, 2).setValue(lastDate);
+        sheet.getRange(i+1, 3).setValue(JSON.stringify(history || []));
+        return { success: true };
+      }
+    }
+    return { error: 'Not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+function savePlayerContact(email, dateStr) {
+  try {
+    email = String(email || '').trim().toLowerCase();
+    if (!email) return { error: 'No email' };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PLAYER_CONTACTS');
+    if (!sheet) {
+      sheet = ss.insertSheet('PLAYER_CONTACTS');
+      sheet.getRange(1,1,1,3).setValues([['Email','LastDate','History']]);
+      sheet.getRange(1,1,1,3).setFontWeight('bold').setBackground('#667eea').setFontColor('#fff');
+    }
+    var data = sheet.getDataRange().getValues();
+    var rowIdx = -1;
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim().toLowerCase() === email) { rowIdx = i + 1; break; }
+    }
+    var history = [];
+    if (rowIdx > 0) {
+      try { history = JSON.parse(String(sheet.getRange(rowIdx, 3).getValue() || '[]')); } catch(e) { history = []; }
+    }
+    // Prepend new entry
+    history.unshift(dateStr);
+    if (history.length > 100) history = history.slice(0, 100);
+    if (rowIdx > 0) {
+      sheet.getRange(rowIdx, 2).setValue(dateStr);
+      sheet.getRange(rowIdx, 3).setValue(JSON.stringify(history));
+    } else {
+      sheet.appendRow([email, dateStr, JSON.stringify(history)]);
+    }
+    return { success: true, lastDate: dateStr, history: history };
+  } catch(e) { return { error: e.message }; }
+}
+
 function getPlayerProfilingData() {
   var output = { players: [], fieldConfig: {}, managerMapping: {}, success: false, error: null };
   
@@ -3996,42 +5660,6 @@ function setupHomeTrigger() {
 }
 
 /** Backfill notes on existing HOME entries */
-function backfillHomeNotes() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('HOME') || ss.getSheetByName('Home');
-  if (!sheet) return;
-  var lastRow = sheet.getLastRow();
-  var lastCol = sheet.getLastColumn();
-  if (lastRow < 2) return;
-  
-  var data = sheet.getRange(1, 1, lastRow, lastCol).getValues();
-  var notes = sheet.getRange(1, 1, lastRow, lastCol).getNotes();
-  var headers = data[0].map(function(h) { return String(h).trim().toUpperCase(); });
-  var newsCol = headers.indexOf('NEWS');
-  var blogCol = headers.indexOf('BLOG');
-  var now = Utilities.formatDate(new Date(), 'Europe/Kiev', 'dd.MM.yyyy HH:mm');
-  var author = getCurrentAuthorName();
-  var count = 0;
-  
-  [newsCol, blogCol].filter(function(c) { return c >= 0; }).forEach(function(colIdx) {
-    for (var i = 1; i < data.length; i++) {
-      if (!String(data[i][colIdx] || '').trim()) continue;
-      var note = notes[i][colIdx] || '';
-      // Stamp if no note, or if author is Unknown
-      if (!note || note.indexOf('|Unknown') !== -1) {
-        sheet.getRange(i + 1, colIdx + 1).setNote(now + '|' + author);
-        count++;
-      }
-    }
-  });
-  Logger.log('Backfilled ' + count + ' HOME notes');
-}
-
-
-/**
- * Fetch crypto (BTC, ETH) and forex (USD, AUD, NZD) rates relative to EUR
- * Uses Google Finance formulas (most reliable in Sheets environment)
- */
 function getCryptoAndForexRates() {
   var result = { rates: { EUR: 1 }, btcEur: 0, ethEur: 0, btcChange: 0, ethChange: 0 };
   
@@ -4835,37 +6463,6 @@ function savePlayerList(data) {
   }
 }
 
-function updatePlayerList(data) {
-  try {
-    var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('Lists');
-    if (!sheet) return { error: 'Lists sheet not found' };
-    
-    var allData = sheet.getDataRange().getValues();
-    var headers = allData[0].map(function(h) { return String(h).trim().toLowerCase(); });
-    var cId = headers.indexOf('id');
-    
-    for (var i = 1; i < allData.length; i++) {
-      if (String(allData[i][cId]) === data.id) {
-        var row = i + 1;
-        var cPriority = headers.indexOf('priority');
-        var cNotes = headers.indexOf('notes');
-        var cUpdated = headers.indexOf('updated');
-        var now = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
-        
-        if (cPriority >= 0 && data.priority !== undefined) sheet.getRange(row, cPriority + 1).setValue(data.priority);
-        if (cNotes >= 0 && data.notes !== undefined) sheet.getRange(row, cNotes + 1).setValue(data.notes);
-        if (cUpdated >= 0) sheet.getRange(row, cUpdated + 1).setValue(now);
-        
-        return { success: true };
-      }
-    }
-    return { error: 'List not found' };
-  } catch(e) {
-    return { error: e.message };
-  }
-}
-
 function deletePlayerList(id) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -4889,18 +6486,6 @@ function deletePlayerList(id) {
 }
 
 // New API wrappers for Lists
-function getLists() {
-  var result = getPlayerLists();
-  if (result.error) return result;
-  // Map old format to new
-  var prioMap = { 'high': 1, 'medium': 3, 'low': 5 };
-  (result.lists || []).forEach(function(l) {
-    l.comments = l.notes || l.comments || '';
-    if (typeof l.priority === 'string') l.priority = prioMap[l.priority] || 3;
-  });
-  return result;
-}
-
 function saveList(data) {
   var prioMap = { 1: 'high', 2: 'high', 3: 'medium', 4: 'low', 5: 'low' };
   return savePlayerList({
@@ -4952,3 +6537,1555 @@ function updateList(listId, updates) {
 }
 
 function deleteList(listId) { return deletePlayerList(listId); }
+
+/******************** CLOSURE ANALYTICS ********************/
+
+function getClosureEnrichment() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var result = { reasons: {}, manualData: {}, appUsers: [] };
+    
+    // 1. Read profiling closure reasons
+    var profSheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    if (profSheet) {
+      var profData = profSheet.getDataRange().getValues();
+      if (profData.length > 1) {
+        var profHeaders = profData[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
+        var profEmailIdx = -1;
+        var profClosureReasonIdx = -1;
+        
+        for (var h = 0; h < profHeaders.length; h++) {
+          if (profHeaders[h].indexOf('email') !== -1 && profEmailIdx === -1) profEmailIdx = h;
+          if (profHeaders[h].indexOf('closure reason') !== -1 || profHeaders[h] === 'closure_reason') profClosureReasonIdx = h;
+        }
+        
+        if (profEmailIdx !== -1 && profClosureReasonIdx !== -1) {
+          for (var r = 1; r < profData.length; r++) {
+            var email = String(profData[r][profEmailIdx] || '').trim().toLowerCase();
+            var reason = String(profData[r][profClosureReasonIdx] || '').trim();
+            if (email && reason) {
+              result.reasons[email] = reason;
+            }
+          }
+        }
+      }
+    }
+    
+    // 2. Read/Create CLOSURE_DATA sheet (with manager column)
+    var closureSheet = ss.getSheetByName('CLOSURE_DATA');
+    if (!closureSheet) {
+      closureSheet = ss.insertSheet('CLOSURE_DATA');
+      closureSheet.appendRow(['player_id', 'email', 'closure_date', 'reopening_date', 'manager', 'notes']);
+      closureSheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+    } else {
+      // Ensure manager column exists
+      var existingHeaders = closureSheet.getRange(1, 1, 1, closureSheet.getLastColumn()).getValues()[0];
+      var hasManager = existingHeaders.some(function(h) { return String(h).trim().toLowerCase() === 'manager'; });
+      if (!hasManager) {
+        var nextCol = closureSheet.getLastColumn() + 1;
+        closureSheet.getRange(1, nextCol).setValue('manager').setFontWeight('bold');
+      }
+    }
+    
+    var closureSheetData = closureSheet.getDataRange().getValues();
+    if (closureSheetData.length > 1) {
+      var cHeaders = closureSheetData[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
+      var cIdIdx = cHeaders.indexOf('player_id');
+      var cClosureDateIdx = cHeaders.indexOf('closure_date');
+      var cReopeningDateIdx = cHeaders.indexOf('reopening_date');
+      var cManagerIdx = cHeaders.indexOf('manager');
+      var cNotesIdx = cHeaders.indexOf('notes');
+      
+      for (var r = 1; r < closureSheetData.length; r++) {
+        var pid = String(closureSheetData[r][cIdIdx] || '').trim();
+        if (pid) {
+          result.manualData[pid] = {
+            closureDate: cClosureDateIdx !== -1 ? formatDateVal_(closureSheetData[r][cClosureDateIdx]) : '',
+            reopeningDate: cReopeningDateIdx !== -1 ? formatDateVal_(closureSheetData[r][cReopeningDateIdx]) : '',
+            manager: cManagerIdx !== -1 ? String(closureSheetData[r][cManagerIdx] || '').trim() : '',
+            notes: cNotesIdx !== -1 ? String(closureSheetData[r][cNotesIdx] || '') : ''
+          };
+        }
+      }
+    }
+    
+    // 3. Read app users from ACCESS sheet
+    var accessSheet = ss.getSheetByName('ACCESS');
+    if (accessSheet) {
+      var aData = accessSheet.getDataRange().getValues();
+      var aH = aData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+      var nameIdx = -1, emailIdx = -1;
+      for (var i = 0; i < aH.length; i++) {
+        if (aH[i] === 'name' && nameIdx === -1) nameIdx = i;
+        if (aH[i] === 'email' && emailIdx === -1) emailIdx = i;
+      }
+      for (var r = 1; r < aData.length; r++) {
+        var uName = nameIdx !== -1 ? String(aData[r][nameIdx] || '').trim() : '';
+        var uEmail = emailIdx !== -1 ? String(aData[r][emailIdx] || '').trim() : '';
+        if (uName || uEmail) {
+          result.appUsers.push(uName || uEmail);
+        }
+      }
+    }
+    
+    Logger.log('Closure enrichment: ' + Object.keys(result.reasons).length + ' reasons, ' + Object.keys(result.manualData).length + ' manual, ' + result.appUsers.length + ' users');
+    return result;
+    
+  } catch (e) {
+    Logger.log('ERROR in getClosureEnrichment: ' + e.toString());
+    return { reasons: {}, manualData: {}, appUsers: [], error: e.toString() };
+  }
+}
+
+function formatDateVal_(val) {
+  if (!val) return '';
+  if (Object.prototype.toString.call(val) === '[object Date]') {
+    return isNaN(val.getTime()) ? '' : Utilities.formatDate(val, Session.getScriptTimeZone(), 'yyyy-MM-dd');
+  }
+  return String(val).trim();
+}
+
+function saveClosureField(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('CLOSURE_DATA');
+    if (!sheet) {
+      sheet = ss.insertSheet('CLOSURE_DATA');
+      sheet.appendRow(['player_id', 'email', 'closure_date', 'reopening_date', 'notes']);
+      sheet.getRange(1, 1, 1, 5).setFontWeight('bold');
+    }
+    
+    var playerId = String(params.playerId || '').trim();
+    var email = String(params.email || '').trim();
+    var field = String(params.field || '').trim(); // 'closure_date' or 'reopening_date' or 'notes'
+    var value = String(params.value || '').trim();
+    
+    if (!playerId) return { error: 'No player ID' };
+    
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
+    var idIdx = headers.indexOf('player_id');
+    var fieldIdx = headers.indexOf(field);
+    
+    if (fieldIdx === -1) return { error: 'Unknown field: ' + field };
+    
+    // Find existing row
+    var existingRow = -1;
+    for (var r = 1; r < data.length; r++) {
+      if (String(data[r][idIdx] || '').trim() === playerId) {
+        existingRow = r + 1; // 1-based
+        break;
+      }
+    }
+    
+    if (existingRow > 0) {
+      sheet.getRange(existingRow, fieldIdx + 1).setValue(value);
+    } else {
+      // Insert new row
+      var numCols = headers.length;
+      var newRow = [];
+      for (var c = 0; c < numCols; c++) newRow.push('');
+      newRow[headers.indexOf('player_id')] = playerId;
+      var emailIdx2 = headers.indexOf('email');
+      if (emailIdx2 !== -1) newRow[emailIdx2] = email;
+      newRow[fieldIdx] = value;
+      sheet.appendRow(newRow);
+    }
+    
+    return { success: true };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
+
+function saveClosureReason(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var email = String(params.email || '').trim();
+    var reason = String(params.reason || '').trim();
+    
+    if (!email) return { error: 'No email' };
+    
+    var profSheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    if (!profSheet) return { error: 'PROFILING sheet not found' };
+    
+    var profData = profSheet.getDataRange().getValues();
+    if (profData.length < 2) return { error: 'Empty PROFILING sheet' };
+    
+    var headers = profData[0].map(function(h) { return String(h || '').trim().toLowerCase(); });
+    var emailIdx = -1;
+    var reasonIdx = -1;
+    
+    for (var h = 0; h < headers.length; h++) {
+      if (headers[h].indexOf('email') !== -1 && emailIdx === -1) emailIdx = h;
+      if (headers[h].indexOf('closure reason') !== -1 || headers[h] === 'closure_reason') reasonIdx = h;
+    }
+    
+    if (emailIdx === -1) return { error: 'No email column in PROFILING' };
+    
+    // If no closure reason column, create it
+    if (reasonIdx === -1) {
+      var lastCol = profData[0].length + 1;
+      profSheet.getRange(1, lastCol).setValue('Closure Reason');
+      profSheet.getRange(1, lastCol).setFontWeight('bold');
+      reasonIdx = lastCol - 1;
+      Logger.log('Created Closure Reason column at index ' + reasonIdx);
+    }
+    
+    // Find player row by email
+    var emailLower = email.toLowerCase();
+    for (var r = 1; r < profData.length; r++) {
+      if (String(profData[r][emailIdx] || '').trim().toLowerCase() === emailLower) {
+        profSheet.getRange(r + 1, reasonIdx + 1).setValue(reason);
+        Logger.log('Updated closure reason for ' + email + ': ' + reason);
+        return { success: true };
+      }
+    }
+    
+    return { error: 'Player not found in PROFILING: ' + email };
+  } catch (e) {
+    return { error: e.toString() };
+  }
+}
+
+/******************** SMS TOOL ********************/
+
+function getSmsWebhookUrl() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_SETTINGS');
+    if (!sheet) {
+      sheet = ss.insertSheet('SMS_SETTINGS');
+      sheet.appendRow(['setting', 'value']);
+      sheet.appendRow(['webhook_url', '']);
+      sheet.getRange(1, 1, 1, 2).setFontWeight('bold');
+      return '';
+    }
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0] || '').trim().toLowerCase() === 'webhook_url') return String(data[i][1] || '').trim();
+    }
+    return '';
+  } catch (e) { return ''; }
+}
+
+function sendSmsWebhook(params) {
+  try {
+    var email = String(params.email || '').trim();
+    var phone = String(params.phone || '').trim();
+    var text = String(params.text || '').trim();
+    var locale = String(params.locale || 'en').trim();
+    var sender = String(params.sender || '').trim();
+    
+    if (!email) return { error: 'No email' };
+    if (!phone) return { error: 'No phone' };
+    if (!text) return { error: 'No message text' };
+    
+    var webhookUrl = getSmsWebhookUrl();
+    if (!webhookUrl) return { error: 'Webhook URL not configured' };
+    
+    var payload = { email: email, phone: phone, text: text, locale: locale, timestamp: new Date().toISOString(), source: 'slotornado_analytics' };
+    var response = UrlFetchApp.fetch(webhookUrl, { method: 'post', contentType: 'application/json', payload: JSON.stringify(payload), muteHttpExceptions: true });
+    var code = response.getResponseCode();
+    
+    if (code >= 200 && code < 300) {
+      var ss = SpreadsheetApp.getActiveSpreadsheet();
+      var logSheet = ss.getSheetByName('SMS_LOG');
+      if (!logSheet) {
+        logSheet = ss.insertSheet('SMS_LOG');
+        logSheet.appendRow(['date', 'sender', 'email', 'phone', 'locale', 'text']);
+        logSheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+      }
+      logSheet.appendRow([new Date().toLocaleString(), sender, email, phone, locale, text]);
+      return { success: true };
+    } else {
+      return { error: 'HTTP ' + code };
+    }
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function getSmsHistory() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_LOG');
+    if (!sheet) return { success: true, rows: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, rows: [] };
+    
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var dateIdx = headers.indexOf('date');
+    var senderIdx = headers.indexOf('sender');
+    var emailIdx = headers.indexOf('email');
+    var phoneIdx = headers.indexOf('phone');
+    var localeIdx = headers.indexOf('locale');
+    if (localeIdx === -1) localeIdx = headers.indexOf('locales');
+    var textIdx = headers.indexOf('text');
+    
+    var rows = [];
+    for (var i = data.length - 1; i >= 1; i--) {
+      var r = data[i];
+      rows.push([
+        String(r[dateIdx >= 0 ? dateIdx : 0] || ''),
+        String(r[senderIdx >= 0 ? senderIdx : 1] || ''),
+        String(r[emailIdx >= 0 ? emailIdx : 2] || ''),
+        String(r[phoneIdx >= 0 ? phoneIdx : 3] || ''),
+        String(r[localeIdx >= 0 ? localeIdx : 4] || ''),
+        String(r[textIdx >= 0 ? textIdx : 5] || '')
+      ]);
+      if (rows.length >= 100) break;
+    }
+    return { success: true, rows: rows };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function getSmsTemplates() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var expectedHeaders = ['name', 'en', 'en-AU', 'en-CA', 'de', 'fr', 'fr-CA'];
+    var sheet = ss.getSheetByName('SMS_TEMPLATES');
+    if (!sheet) {
+      sheet = ss.insertSheet('SMS_TEMPLATES');
+      sheet.appendRow(expectedHeaders);
+      sheet.getRange(1, 1, 1, expectedHeaders.length).setFontWeight('bold');
+      return { success: true, rows: [] };
+    }
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim(); });
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      var obj = {};
+      // Read by header name, take first occurrence of each header
+      expectedHeaders.forEach(function(eh) {
+        var idx = headers.indexOf(eh);
+        if (idx !== -1) obj[eh] = String(data[i][idx] || '').trim();
+        else obj[eh] = '';
+      });
+      rows.push(obj);
+    }
+    return { success: true, rows: rows };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function saveSmsTemplate(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var expectedHeaders = ['name', 'en', 'en-AU', 'en-CA', 'de', 'fr', 'fr-CA'];
+    var sheet = ss.getSheetByName('SMS_TEMPLATES');
+    if (!sheet) {
+      sheet = ss.insertSheet('SMS_TEMPLATES');
+      sheet.appendRow(expectedHeaders);
+      sheet.getRange(1, 1, 1, expectedHeaders.length).setFontWeight('bold');
+    }
+    var newRow = expectedHeaders.map(function(h) { return params[h] || ''; });
+    sheet.appendRow(newRow);
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function deleteSmsTemplate(idx) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_TEMPLATES');
+    if (!sheet) return { error: 'No templates sheet' };
+    var rowNum = idx + 2; // 0-indexed + header
+    if (rowNum > sheet.getLastRow()) return { error: 'Row not found' };
+    sheet.deleteRow(rowNum);
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function getSmsBitlyLinks() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_BITLY');
+    if (!sheet) {
+      sheet = ss.insertSheet('SMS_BITLY');
+      sheet.appendRow(['name', 'original_url', 'bitly_link']);
+      sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+      return { success: true, rows: [] };
+    }
+    var data = sheet.getDataRange().getValues();
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      rows.push(data[i].map(function(c) { return String(c == null ? '' : c); }));
+    }
+    return { success: true, rows: rows };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function addSmsBitlyLink(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_BITLY');
+    if (!sheet) {
+      sheet = ss.insertSheet('SMS_BITLY');
+      sheet.appendRow(['name', 'original_url', 'bitly_link']);
+      sheet.getRange(1, 1, 1, 3).setFontWeight('bold');
+    }
+    sheet.appendRow([params.name || '', params.original || '', params.bitly || '']);
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function deleteSmsBitlyLink(idx) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_BITLY');
+    if (!sheet) return { error: 'No sheet' };
+    sheet.deleteRow(idx + 2);
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+/******************** QA BOARD ********************/
+
+function getQaTemplates() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SCORECARDS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_SCORECARDS');
+      sheet.appendRow(['name', 'data']);
+      sheet.getRange(1, 1, 1, 2).setFontWeight('bold');
+      return { success: true, rows: [] };
+    }
+    var data = sheet.getDataRange().getValues();
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      try {
+        var obj = JSON.parse(String(data[i][1] || '{}'));
+        obj.name = String(data[i][0] || '');
+        rows.push(obj);
+      } catch(e) {}
+    }
+    return { success: true, rows: rows };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function saveQaTemplate(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SCORECARDS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_SCORECARDS');
+      sheet.appendRow(['name', 'data']);
+      sheet.getRange(1, 1, 1, 2).setFontWeight('bold');
+    }
+    var idx = params.idx;
+    var template = params.template;
+    var jsonData = JSON.stringify({ blocks: template.blocks || [], thresholds: template.thresholds || {}, bonus: template.bonus || {}, appeal_deadline: template.appeal_deadline || 10, appeal_deadline_month: template.appeal_deadline_month || 'next' });
+    
+    if (idx >= 0) {
+      // Update existing
+      var rowNum = idx + 2;
+      sheet.getRange(rowNum, 1).setValue(template.name || '');
+      sheet.getRange(rowNum, 2).setValue(jsonData);
+    } else {
+      // Append new
+      sheet.appendRow([template.name || '', jsonData]);
+    }
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function deleteQaTemplate(idx) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SCORECARDS');
+    if (!sheet) return { error: 'Sheet not found' };
+    sheet.deleteRow(idx + 2);
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function getQaSettings() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SETTINGS');
+    if (!sheet) return { success: true, roles: [], teams: [] };
+    var data = sheet.getDataRange().getValues();
+    var result = { success: true, roles: [], teams: [] };
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim();
+      try {
+        if (key === 'qa_roles') result.roles = JSON.parse(String(data[i][1] || '[]'));
+        if (key === 'qa_teams') result.teams = JSON.parse(String(data[i][1] || '[]'));
+      } catch(e) {}
+    }
+    return result;
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function saveQaSettings(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SETTINGS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_SETTINGS');
+      sheet.appendRow(['key', 'value']);
+      sheet.getRange(1, 1, 1, 2).setFontWeight('bold');
+    }
+    var data = sheet.getDataRange().getValues();
+    var keysToSave = {};
+    if (params.roles !== undefined) keysToSave['qa_roles'] = JSON.stringify(params.roles);
+    if (params.teams !== undefined) keysToSave['qa_teams'] = JSON.stringify(params.teams);
+    
+    Object.keys(keysToSave).forEach(function(key) {
+      var found = false;
+      for (var i = 0; i < data.length; i++) {
+        if (String(data[i][0]).trim() === key) {
+          sheet.getRange(i + 1, 2).setValue(keysToSave[key]);
+          found = true;
+          break;
+        }
+      }
+      if (!found) sheet.appendRow([key, keysToSave[key]]);
+    });
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function getQaResults() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_RESULTS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_RESULTS');
+      sheet.appendRow(['manager', 'month', 'template_name', 'score', 'failures_json', 'created_at', 'created_by']);
+      sheet.getRange(1, 1, 1, 7).setFontWeight('bold');
+      return { success: true, rows: [] };
+    }
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      var obj = {};
+      headers.forEach(function(h, idx) {
+        var val = data[i][idx];
+        // Normalize month - could be Date object from Sheets
+        if (h === 'month' && val instanceof Date) {
+          obj[h] = val.getFullYear() + '-' + String(val.getMonth() + 1).padStart(2, '0');
+        } else {
+          obj[h] = String(val == null ? '' : val).trim();
+        }
+      });
+      rows.push(obj);
+    }
+    return { success: true, rows: rows };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function saveQaResult(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_RESULTS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_RESULTS');
+      sheet.appendRow(['manager', 'month', 'template_name', 'score', 'failures_json', 'created_at', 'created_by']);
+      sheet.getRange(1, 1, 1, 7).setFontWeight('bold');
+    }
+    var monthStr = String(params.month || '').trim();
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var mgrCol = headers.indexOf('manager');
+    var monthCol = headers.indexOf('month');
+    var found = false;
+    for (var i = 1; i < data.length; i++) {
+      var rowMonth = data[i][monthCol];
+      if (rowMonth instanceof Date) rowMonth = rowMonth.getFullYear() + '-' + String(rowMonth.getMonth() + 1).padStart(2, '0');
+      else rowMonth = String(rowMonth || '').trim();
+      if (String(data[i][mgrCol] || '').trim() === params.manager && rowMonth === monthStr) {
+        var scoreCol = headers.indexOf('score');
+        var failCol = headers.indexOf('failures_json');
+        var createdCol = headers.indexOf('created_at');
+        var byCol = headers.indexOf('created_by');
+        var tplCol = headers.indexOf('template_name');
+        if (scoreCol >= 0) sheet.getRange(i + 1, scoreCol + 1).setValue(params.score);
+        if (failCol >= 0) sheet.getRange(i + 1, failCol + 1).setValue(params.failures_json);
+        if (tplCol >= 0) sheet.getRange(i + 1, tplCol + 1).setValue(params.template_name || '');
+        if (createdCol >= 0) sheet.getRange(i + 1, createdCol + 1).setValue(new Date().toLocaleString());
+        if (byCol >= 0) sheet.getRange(i + 1, byCol + 1).setValue(params.created_by || '');
+        found = true;
+        break;
+      }
+    }
+    if (!found) {
+      var newRow = sheet.getLastRow() + 1;
+      sheet.appendRow([params.manager || '', monthStr, params.template_name || '', params.score || 0, params.failures_json || '[]', new Date().toLocaleString(), params.created_by || '']);
+      // Force month cell to text format
+      sheet.getRange(newRow, monthCol + 1).setNumberFormat('@');
+    }
+    return { success: true };
+  } catch (e) { return { error: e.toString() }; }
+}
+
+function saveUserEmoji(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('ACCESS');
+    if (!sheet) return { error: 'ACCESS sheet not found' };
+    var email = String(params.email || '').trim().toLowerCase();
+    var emoji = String(params.emoji || '').trim();
+    if (!email) return { error: 'No email' };
+    
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emojiCol = headers.indexOf('emoji');
+    
+    // Create emoji column if not exists
+    if (emojiCol === -1) {
+      emojiCol = headers.length;
+      sheet.getRange(1, emojiCol + 1).setValue('Emoji').setFontWeight('bold');
+    }
+    
+    var emailCol = headers.indexOf('email');
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailCol] || '').toLowerCase().trim() === email) {
+        sheet.getRange(i + 1, emojiCol + 1).setValue(emoji);
+        return { success: true };
+      }
+    }
+    return { error: 'User not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+function getProfilingCompletionByManager() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    if (!sheet) return { success: true, managers: {}, debug: 'PROFILING sheet not found' };
+    
+    // Load MANAGER mapping (tag-based)
+    var mgrMap = getManagerMapping();
+    var tagToMgr = mgrMap.tagToManager || {};
+    if (!Object.keys(tagToMgr).length) return { success: true, managers: {}, debug: 'No MANAGER mapping found' };
+    
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, managers: {}, debug: 'Sheet empty' };
+    
+    var headers = data[0].map(function(h) { return String(h).trim(); });
+    var headersLower = headers.map(function(h) { return h.toLowerCase(); });
+    
+    // Find tags column
+    var tagsCol = -1;
+    for (var ti = 0; ti < headersLower.length; ti++) {
+      if (headersLower[ti] === 'tags' || headersLower[ti] === 'tag') { tagsCol = ti; break; }
+    }
+    if (tagsCol === -1) return { success: true, managers: {}, debug: 'No tags column. Headers: ' + headers.join(' | ') };
+    
+    // Find VIP confirmation date column
+    var vipDateCol = -1;
+    for (var vi = 0; vi < headersLower.length; vi++) {
+      if (headersLower[vi].indexOf('vip confirm') !== -1 || headersLower[vi] === 'vip_confirmation_date') { vipDateCol = vi; break; }
+    }
+    
+    // Skip system columns
+    var skipCols = {};
+    headersLower.forEach(function(h, i) {
+      if (h === 'tags' || h === 'tag' || h === 'last_webhook_at' || h === '_last_webhook_at' || h === '' || h === 'photo' || h === 'id') skipCols[i] = true;
+    });
+    
+    // Load TYPE mapping for player type detection
+    var typeMap = getTypeMapping();
+    var tagToType = typeMap.tagToType || {};
+    
+    var now = new Date();
+    var oneMonthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    var result = {};
+    
+    for (var i = 1; i < data.length; i++) {
+      var tagsRaw = data[i][tagsCol];
+      var playerTags = [];
+      if (tagsRaw) {
+        var ts = String(tagsRaw).trim();
+        if (ts.charAt(0) === '[') { try { playerTags = JSON.parse(ts); } catch(e) { playerTags = [ts]; } }
+        else if (ts) { playerTags = ts.split(',').map(function(t) { return t.trim(); }); }
+      }
+      playerTags = playerTags.map(function(t) { return String(t).toLowerCase().trim().replace(/"/g, ''); });
+      
+      var playerMgr = null;
+      for (var pt = 0; pt < playerTags.length; pt++) {
+        if (tagToMgr[playerTags[pt]]) { playerMgr = tagToMgr[playerTags[pt]]; break; }
+      }
+      if (!playerMgr) continue;
+      
+      // Detect player type
+      var playerType = 'UNKNOWN';
+      for (var tt = 0; tt < playerTags.length; tt++) {
+        if (tagToType[playerTags[tt]]) { playerType = tagToType[playerTags[tt]]; break; }
+      }
+      
+      var mgrKey = playerMgr.toLowerCase();
+      if (!result[mgrKey]) result[mgrKey] = { name: playerMgr, total: 0, filled: 0, players: 0, playersFull: 0, totalOld: 0, filledOld: 0, playersOld: 0, playersFullOld: 0, cols: {}, types: {} };
+      
+      // Per-type stats
+      if (!result[mgrKey].types[playerType]) result[mgrKey].types[playerType] = { total: 0, filled: 0, players: 0, totalOld: 0, filledOld: 0, playersOld: 0, cols: {} };
+      
+      var isOld = false;
+      if (vipDateCol >= 0) {
+        var vDate = data[i][vipDateCol];
+        if (vDate instanceof Date) { isOld = vDate <= oneMonthAgo; }
+        else if (vDate) { var parsed = new Date(String(vDate)); if (!isNaN(parsed.getTime())) isOld = parsed <= oneMonthAgo; }
+      }
+      
+      var pT = 0, pF = 0;
+      for (var ci = 0; ci < headers.length; ci++) {
+        if (skipCols[ci]) continue;
+        pT++;
+        var colName = headers[ci];
+        if (!result[mgrKey].cols[colName]) result[mgrKey].cols[colName] = { total: 0, filled: 0, totalOld: 0, filledOld: 0 };
+        if (!result[mgrKey].types[playerType].cols[colName]) result[mgrKey].types[playerType].cols[colName] = { total: 0, filled: 0, totalOld: 0, filledOld: 0 };
+        result[mgrKey].cols[colName].total++;
+        result[mgrKey].types[playerType].cols[colName].total++;
+        var val = data[i][ci];
+        var isFilled = val !== undefined && val !== null && val !== '' && String(val).trim() !== '';
+        if (isFilled) { pF++; result[mgrKey].cols[colName].filled++; result[mgrKey].types[playerType].cols[colName].filled++; }
+        if (isOld) { result[mgrKey].cols[colName].totalOld++; result[mgrKey].types[playerType].cols[colName].totalOld++; if (isFilled) { result[mgrKey].cols[colName].filledOld++; result[mgrKey].types[playerType].cols[colName].filledOld++; } }
+      }
+      result[mgrKey].total += pT;
+      result[mgrKey].filled += pF;
+      result[mgrKey].players++;
+      if (pT > 0 && pF / pT >= 0.8) result[mgrKey].playersFull++;
+      // Type stats
+      result[mgrKey].types[playerType].total += pT;
+      result[mgrKey].types[playerType].filled += pF;
+      result[mgrKey].types[playerType].players++;
+      if (isOld) {
+        result[mgrKey].totalOld += pT; result[mgrKey].filledOld += pF; result[mgrKey].playersOld++;
+        if (pT > 0 && pF / pT >= 0.8) result[mgrKey].playersFullOld++;
+        result[mgrKey].types[playerType].totalOld += pT;
+        result[mgrKey].types[playerType].filledOld += pF;
+        result[mgrKey].types[playerType].playersOld++;
+      }
+    }
+    
+    return { success: true, managers: result, debug: 'Tags col: ' + headers[tagsCol] + '. Mgrs: ' + Object.keys(result).length + '. Players matched: ' + Object.keys(result).reduce(function(s,k){return s+result[k].players;},0) };
+  } catch(e) { return { error: e.toString() }; }
+}
+
+// ===== KPI BOARD BACKEND =====
+
+function getKpiTemplates() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_TEMPLATES');
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
+    var templates = [];
+    for (var i = 1; i < data.length; i++) {
+      try {
+        var obj = JSON.parse(data[i][0]);
+        templates.push(obj);
+      } catch(e) {}
+    }
+    return templates;
+  } catch(e) { return []; }
+}
+
+function saveKpiTemplate(template, index) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('KPI_TEMPLATES');
+  if (!sheet) { sheet = ss.insertSheet('KPI_TEMPLATES'); sheet.getRange(1,1).setValue('template_json').setFontWeight('bold'); }
+  var json = JSON.stringify(template);
+  if (index !== undefined && index !== null && index >= 0) {
+    sheet.getRange(index + 2, 1).setValue(json);
+  } else {
+    sheet.appendRow([json]);
+  }
+  return true;
+}
+
+function deleteKpiTemplate(index) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('KPI_TEMPLATES');
+  if (!sheet) return;
+  sheet.deleteRow(index + 2);
+}
+
+function getKpiResults() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_RESULTS');
+    if (!sheet) return [];
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return [];
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var results = [];
+    for (var i = 1; i < data.length; i++) {
+      var row = {};
+      headers.forEach(function(h, ci) { row[h] = data[i][ci]; });
+      // Normalize month
+      if (row.month instanceof Date) {
+        row.month = Utilities.formatDate(row.month, Session.getScriptTimeZone(), 'yyyy-MM');
+      } else {
+        row.month = String(row.month || '');
+      }
+      results.push(row);
+    }
+    return results;
+  } catch(e) { return []; }
+}
+
+function saveKpiResult(result) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('KPI_RESULTS');
+  if (!sheet) {
+    sheet = ss.insertSheet('KPI_RESULTS');
+    sheet.getRange(1,1,1,5).setValues([['manager','month','template_name','score','goals_json']]);
+    sheet.getRange(1,1,1,5).setFontWeight('bold');
+    sheet.getRange(1,2,sheet.getMaxRows(),1).setNumberFormat('@');
+  }
+  // Find existing
+  var data = sheet.getDataRange().getValues();
+  var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+  var mgrC = headers.indexOf('manager');
+  var moC = headers.indexOf('month');
+  for (var i = 1; i < data.length; i++) {
+    var rm = data[i][moC];
+    if (rm instanceof Date) rm = Utilities.formatDate(rm, Session.getScriptTimeZone(), 'yyyy-MM');
+    else rm = String(rm || '');
+    if (String(data[i][mgrC]).trim() === result.manager && rm === result.month) {
+      sheet.getRange(i+1,1,1,5).setValues([[result.manager, result.month, result.template_name, result.score, result.goals_json]]);
+      return true;
+    }
+  }
+  sheet.appendRow([result.manager, result.month, result.template_name, result.score, result.goals_json]);
+  return true;
+}
+
+function deleteKpiResult(manager, month) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_RESULTS');
+    if (!sheet) return { success: true };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var mgrC = headers.indexOf('manager');
+    var moC = headers.indexOf('month');
+    for (var i = data.length - 1; i >= 1; i--) {
+      var rm = data[i][moC];
+      if (rm instanceof Date) rm = Utilities.formatDate(rm, Session.getScriptTimeZone(), 'yyyy-MM');
+      else rm = String(rm || '');
+      if (String(data[i][mgrC]).trim() === manager && rm === month) {
+        sheet.deleteRow(i + 1);
+        return { success: true };
+      }
+    }
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+function getKpiSettings() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_SETTINGS');
+    if (!sheet) return {};
+    var data = sheet.getDataRange().getValues();
+    var result = {};
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim();
+      var val = String(data[i][1] || '').trim();
+      if (key) { try { result[key] = JSON.parse(val); } catch(e) { result[key] = val; } }
+    }
+    return result;
+  } catch(e) { return {}; }
+}
+
+function saveKpiSettings(key, value) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('KPI_SETTINGS');
+  if (!sheet) { sheet = ss.insertSheet('KPI_SETTINGS'); }
+  var data = sheet.getDataRange().getValues();
+  for (var i = 0; i < data.length; i++) {
+    if (String(data[i][0]).trim() === key) {
+      sheet.getRange(i+1,2).setValue(JSON.stringify(value));
+      return true;
+    }
+  }
+  sheet.appendRow([key, JSON.stringify(value)]);
+  return true;
+}
+
+// ===== LOCK EVALUATION PERIOD =====
+function lockQaScorecard(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_RESULTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var mgrCol = headers.indexOf('manager');
+    var moCol = headers.indexOf('month');
+    var lockedCol = headers.indexOf('locked');
+    if (lockedCol === -1) {
+      lockedCol = headers.length;
+      sheet.getRange(1, lockedCol + 1).setValue('locked').setFontWeight('bold');
+    }
+    var mgr = String(params.manager || '').toLowerCase().trim();
+    var mo = String(params.month || '').trim();
+    for (var i = 1; i < data.length; i++) {
+      var rowMo = data[i][moCol];
+      if (rowMo instanceof Date) rowMo = rowMo.getFullYear() + '-' + String(rowMo.getMonth()+1).padStart(2,'0');
+      else rowMo = String(rowMo || '').trim();
+      if (String(data[i][mgrCol] || '').toLowerCase().trim() === mgr && rowMo === mo) {
+        sheet.getRange(i + 1, lockedCol + 1).setValue('TRUE');
+        return { success: true };
+      }
+    }
+    return { error: 'Scorecard not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+function lockKpiResult(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_RESULTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var lockedCol = headers.indexOf('locked');
+    if (lockedCol === -1) {
+      lockedCol = headers.length;
+      sheet.getRange(1, lockedCol + 1).setValue('locked').setFontWeight('bold');
+    }
+    var mgr = String(params.manager || '').toLowerCase().trim();
+    var mo = String(params.month || '').trim();
+    for (var i = 1; i < data.length; i++) {
+      var rowMgr = String(data[i][headers.indexOf('manager')] || '').toLowerCase().trim();
+      var rowMo = data[i][headers.indexOf('month')];
+      if (rowMo instanceof Date) rowMo = rowMo.getFullYear() + '-' + String(rowMo.getMonth()+1).padStart(2,'0');
+      else rowMo = String(rowMo || '').trim();
+      if (rowMgr === mgr && rowMo === mo) {
+        sheet.getRange(i + 1, lockedCol + 1).setValue('TRUE');
+        Logger.log('lockKpiResult: locked row ' + (i+1) + ' mgr=' + mgr + ' mo=' + mo);
+        return { success: true };
+      }
+    }
+    Logger.log('lockKpiResult: NOT FOUND mgr=' + mgr + ' mo=' + mo);
+    return { error: 'Result not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+function unlockQaScorecard(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_RESULTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var mgrCol = headers.indexOf('manager');
+    var moCol = headers.indexOf('month');
+    var lockedCol = headers.indexOf('locked');
+    if (lockedCol === -1) return { error: 'No locked column' };
+    var mgr = String(params.manager || '').toLowerCase().trim();
+    var mo = String(params.month || '').trim();
+    for (var i = 1; i < data.length; i++) {
+      var rowMo = data[i][moCol];
+      if (rowMo instanceof Date) rowMo = rowMo.getFullYear() + '-' + String(rowMo.getMonth()+1).padStart(2,'0');
+      else rowMo = String(rowMo || '').trim();
+      if (String(data[i][mgrCol] || '').toLowerCase().trim() === mgr && rowMo === mo) {
+        sheet.getRange(i + 1, lockedCol + 1).setValue('FALSE');
+        return { success: true };
+      }
+    }
+    return { error: 'Scorecard not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+function unlockKpiResult(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('KPI_RESULTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var lockedCol = headers.indexOf('locked');
+    if (lockedCol === -1) return { error: 'No locked column' };
+    for (var i = 1; i < data.length; i++) {
+      var row = {};
+      headers.forEach(function(h, idx) { row[h] = data[i][idx]; });
+      if (String(row.manager || '').toLowerCase().trim() === String(params.manager || '').toLowerCase().trim() && String(row.month || '').trim() === String(params.month || '').trim()) {
+        sheet.getRange(i + 1, lockedCol + 1).setValue('FALSE');
+        return { success: true };
+      }
+    }
+    return { error: 'Result not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ===== QA SCORECARD DELETE =====
+function deleteQaScorecard(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_RESULTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var mgrCol = headers.indexOf('manager');
+    var moCol = headers.indexOf('month');
+    var mgr = String(params.manager || '').toLowerCase().trim();
+    var mo = String(params.month || '').trim();
+    for (var i = data.length - 1; i >= 1; i--) {
+      var rowMgr = String(data[i][mgrCol] || '').toLowerCase().trim();
+      var rowMo = data[i][moCol];
+      // Normalize month - could be Date object from Sheets
+      if (rowMo instanceof Date) {
+        rowMo = rowMo.getFullYear() + '-' + String(rowMo.getMonth() + 1).padStart(2, '0');
+      } else {
+        rowMo = String(rowMo || '').trim();
+      }
+      if (rowMgr === mgr && rowMo === mo) {
+        sheet.deleteRow(i + 1);
+        Logger.log('Deleted QA scorecard: ' + mgr + ' ' + mo + ' row ' + (i+1));
+        return { success: true };
+      }
+    }
+    Logger.log('QA scorecard not found: mgr=' + mgr + ' mo=' + mo);
+    return { error: 'Scorecard not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ===== QA APPEALS =====
+function getQaAppeals() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_APPEALS');
+    if (!sheet) return { success: true, appeals: [] };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var appeals = [];
+    for (var i = 1; i < data.length; i++) {
+      var obj = {};
+      headers.forEach(function(h, idx) { obj[h] = data[i][idx]; });
+      obj._row = i + 1;
+      appeals.push(obj);
+    }
+    return { success: true, appeals: appeals };
+  } catch(e) { return { error: e.message }; }
+}
+
+function submitQaAppeal(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_APPEALS');
+    if (!sheet) {
+      sheet = ss.insertSheet('QA_APPEALS');
+      sheet.appendRow(['id','manager','month','template','bi','ei','fi','level','pct','failure_name','appeal_text','status','admin_comment','created_at','resolved_at','resolved_by']);
+      sheet.getRange(1,1,1,16).setFontWeight('bold');
+    }
+    var id = 'AP' + Date.now();
+    sheet.appendRow([
+      id,
+      String(params.manager || ''),
+      String(params.month || ''),
+      String(params.template || ''),
+      parseInt(params.bi) || 0,
+      parseInt(params.ei) || 0,
+      parseInt(params.fi) >= 0 ? parseInt(params.fi) : -1,
+      String(params.level || ''),
+      parseFloat(params.pct) || 0,
+      String(params.failure_name || ''),
+      String(params.appeal_text || ''),
+      'pending',
+      '',
+      new Date().toISOString(),
+      '',
+      ''
+    ]);
+    return { success: true, id: id };
+  } catch(e) { return { error: e.message }; }
+}
+
+function resolveQaAppeal(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_APPEALS');
+    if (!sheet) return { error: 'No appeals sheet' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var idCol = headers.indexOf('id');
+    var statusCol = headers.indexOf('status');
+    var commentCol = headers.indexOf('admin_comment');
+    var resolvedAtCol = headers.indexOf('resolved_at');
+    var resolvedByCol = headers.indexOf('resolved_by');
+    var aid = String(params.id || '');
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][idCol]) === aid) {
+        sheet.getRange(i+1, statusCol+1).setValue(params.status || 'rejected');
+        sheet.getRange(i+1, commentCol+1).setValue(params.comment || '');
+        sheet.getRange(i+1, resolvedAtCol+1).setValue(new Date().toISOString());
+        sheet.getRange(i+1, resolvedByCol+1).setValue(params.resolved_by || '');
+        // Update the scorecard for ALL statuses
+        var mgr = String(data[i][headers.indexOf('manager')]);
+        var moRaw = data[i][headers.indexOf('month')];
+        var mo = (moRaw instanceof Date) ? moRaw.getFullYear() + '-' + String(moRaw.getMonth()+1).padStart(2,'0') : String(moRaw || '').trim();
+        var fbi = parseInt(data[i][headers.indexOf('bi')]);
+        var fei = parseInt(data[i][headers.indexOf('ei')]);
+        var ffi = headers.indexOf('fi') >= 0 ? parseInt(data[i][headers.indexOf('fi')]) : -1;
+        Logger.log('resolveQaAppeal: looking for mgr=' + mgr + ' mo=' + mo + ' fi=' + ffi + ' bi=' + fbi + ' ei=' + fei);
+        var resSheet = ss.getSheetByName('QA_RESULTS');
+        if (resSheet) {
+          var rData = resSheet.getDataRange().getValues();
+          var rH = rData[0].map(function(h){return String(h).trim().toLowerCase();});
+          var rMgr = rH.indexOf('manager'); var rMo = rH.indexOf('month'); var rFj = rH.indexOf('failures_json'); var rSc = rH.indexOf('score');
+          Logger.log('resolveQaAppeal: scanning ' + (rData.length-1) + ' result rows');
+          for (var ri = 1; ri < rData.length; ri++) {
+            var rRowMo = rData[ri][rMo];
+            if (rRowMo instanceof Date) rRowMo = rRowMo.getFullYear() + '-' + String(rRowMo.getMonth()+1).padStart(2,'0');
+            else rRowMo = String(rRowMo || '').trim();
+            if (String(rData[ri][rMgr]).toLowerCase() === mgr.toLowerCase() && rRowMo === mo) {
+              Logger.log('resolveQaAppeal: found scorecard at row ' + (ri+1));
+              var failures = []; try { failures = JSON.parse(String(rData[ri][rFj] || '[]')); } catch(e){}
+              var matched = false;
+              for (var fi = 0; fi < failures.length; fi++) {
+                // Match by fi (global index) if available, fallback to bi+ei
+                var isMatch = (ffi >= 0) ? (fi === ffi) : (parseInt(failures[fi].bi) === fbi && parseInt(failures[fi].ei) === fei);
+                if (isMatch) {
+                  matched = true;
+                  Logger.log('resolveQaAppeal: matched failure fi=' + fi + ' status=' + params.status);
+                  if (params.status === 'accepted') {
+                    failures[fi].original_pct = failures[fi].pct;
+                    failures[fi].pct = 0;
+                    failures[fi].appealed = 'accepted';
+                    failures[fi].appeal_comment = params.comment || '';
+                  } else if (params.status === 'downgraded') {
+                    failures[fi].original_pct = failures[fi].pct;
+                    failures[fi].original_level = failures[fi].level;
+                    failures[fi].level = params.new_level || 'warning';
+                    failures[fi].pct = parseFloat(params.new_pct) || 0;
+                    failures[fi].appealed = 'downgraded';
+                    failures[fi].appeal_comment = params.comment || '';
+                  } else {
+                    // rejected
+                    failures[fi].appealed = 'rejected';
+                    failures[fi].appeal_comment = params.comment || '';
+                  }
+                  break;
+                }
+              }
+              if (!matched) Logger.log('resolveQaAppeal: NO failure matched bi=' + fbi + ' ei=' + fei + ' in ' + failures.length + ' failures');
+              // Recalculate score
+              var totalDeduct = 0;
+              failures.forEach(function(f) { if (f.level !== 'warning') totalDeduct += parseFloat(f.pct) || 0; });
+              var newScore = Math.max(0, 100 - totalDeduct);
+              Logger.log('resolveQaAppeal: new score=' + newScore + ' deducted=' + totalDeduct);
+              resSheet.getRange(ri+1, rFj+1).setValue(JSON.stringify(failures));
+              resSheet.getRange(ri+1, rSc+1).setValue(newScore);
+              break;
+            }
+          }
+        }
+        return { success: true };
+      }
+    }
+    return { error: 'Appeal not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ===== QUALITY PDF & EMAIL =====
+function getQualityEmailSettings() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SETTINGS');
+    if (!sheet) return { success: true, subject: '', body: '' };
+    var data = sheet.getDataRange().getValues();
+    var result = { success: true, subject: '', body: '' };
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim();
+      if (key === 'quality_email_subject') result.subject = String(data[i][1] || '');
+      if (key === 'quality_email_body') result.body = String(data[i][1] || '');
+    }
+    return result;
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveQualityEmailSettings(params) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SETTINGS');
+    if (!sheet) { sheet = ss.insertSheet('QA_SETTINGS'); }
+    var data = sheet.getDataRange().getValues();
+    function setKey(key, val) {
+      for (var i = 0; i < data.length; i++) {
+        if (String(data[i][0]).trim() === key) { sheet.getRange(i+1, 2).setValue(val); return; }
+      }
+      sheet.appendRow([key, val]);
+    }
+    setKey('quality_email_subject', params.subject || '');
+    setKey('quality_email_body', params.body || '');
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+function sendQualityPdfEmail(params) {
+  try {
+    var mgrEmail = String(params.manager || '');
+    var month = String(params.month || '');
+    var htmlContent = String(params.html || '');
+    var subject = String(params.subject || 'Quality Report');
+    var bodyText = String(params.body || '');
+    if (!mgrEmail || !htmlContent) return { error: 'Missing params' };
+    var moNames = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+    var moParts = month.split('-');
+    var moName = moNames[parseInt(moParts[1]) || 1] || '';
+    var moYear = moParts[0] || '';
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var accessSheet = ss.getSheetByName('ACCESS');
+    var mgrName = mgrEmail.split('@')[0];
+    if (accessSheet) {
+      var aData = accessSheet.getDataRange().getValues();
+      var aH = aData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+      var eCol = aH.indexOf('email'); var nCol = aH.indexOf('nickname'); var nmCol = aH.indexOf('name');
+      for (var i = 1; i < aData.length; i++) {
+        if (String(aData[i][eCol] || '').toLowerCase().trim() === mgrEmail.toLowerCase().trim()) {
+          mgrName = String(aData[i][nCol] || aData[i][nmCol] || '').trim() || mgrName;
+          break;
+        }
+      }
+    }
+    subject = subject.replace(/\{month\}/g, moName).replace(/\{year\}/g, moYear).replace(/\{name\}/g, mgrName);
+    bodyText = bodyText.replace(/\{month\}/g, moName).replace(/\{year\}/g, moYear).replace(/\{name\}/g, mgrName);
+    var pdfHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>';
+    pdfHtml += 'body{font-family:Arial,Helvetica,sans-serif;margin:20px;color:#1e293b;font-size:12px;line-height:1.5} td{vertical-align:top} table{border-collapse:collapse}';
+    pdfHtml += '</style></head><body>' + htmlContent + '</body></html>';
+    var blob = Utilities.newBlob(pdfHtml, 'text/html', 'report.html').getAs('application/pdf');
+    blob.setName('Quality_Report_' + mgrName.replace(/[^a-zA-Z0-9]/g,'_') + '_' + moName + '_' + moYear + '.pdf');
+    GmailApp.sendEmail(mgrEmail, subject, bodyText.replace(/\n/g, '\n'), {
+      htmlBody: '<div style="font-family:Arial,sans-serif;font-size:14px;color:#333;line-height:1.6">' + bodyText.replace(/\n/g, '<br>') + '</div>',
+      attachments: [blob]
+    });
+    // Track sent status
+    var settingsSheet = ss.getSheetByName('QA_SETTINGS');
+    if (!settingsSheet) settingsSheet = ss.insertSheet('QA_SETTINGS');
+    var key = 'pdf_sent_' + month;
+    var sData = settingsSheet.getDataRange().getValues();
+    var found = false;
+    for (var si = 0; si < sData.length; si++) {
+      if (String(sData[si][0]).trim() === key) {
+        var list = []; try { list = JSON.parse(String(sData[si][1])); } catch(e) {}
+        var entry = list.find(function(x) { return x.email === mgrEmail; });
+        if (entry) { entry.sent_at = new Date().toISOString(); entry.sent_by = Session.getActiveUser().getEmail() || ''; }
+        else list.push({ email: mgrEmail, sent_at: new Date().toISOString(), sent_by: Session.getActiveUser().getEmail() || '' });
+        settingsSheet.getRange(si + 1, 2).setValue(JSON.stringify(list));
+        found = true; break;
+      }
+    }
+    if (!found) {
+      settingsSheet.appendRow([key, JSON.stringify([{ email: mgrEmail, sent_at: new Date().toISOString(), sent_by: Session.getActiveUser().getEmail() || '' }])]);
+    }
+    return { success: true, to: mgrEmail };
+  } catch(e) { return { error: e.message }; }
+}
+
+function getQualityPdfSentStatus(month) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('QA_SETTINGS');
+    if (!sheet) return { success: true, sent: [] };
+    var key = 'pdf_sent_' + String(month || '');
+    var data = sheet.getDataRange().getValues();
+    for (var i = 0; i < data.length; i++) {
+      if (String(data[i][0]).trim() === key) {
+        var list = []; try { list = JSON.parse(String(data[i][1])); } catch(e) {}
+        return { success: true, sent: list };
+      }
+    }
+    return { success: true, sent: [] };
+  } catch(e) { return { error: e.message }; }
+}
+
+// =============================================
+// =============================================
+// PUBLIC TIMETABLE VIEW (read-only for other departments)
+// =============================================
+function getTimetablePublicUrl() {
+  try {
+    return ScriptApp.getService().getUrl() + '?view=public';
+  } catch(e) {
+    return '?view=public';
+  }
+}
+
+
+function getTimetableLabels_() {
+  // Labels are stored inside ttData.labels by saveTimetableData
+  // Just return empty array — getTimetableData already loads them
+  return [];
+}
+
+function getTimetablePublicHtml() {
+  // Check access list
+  var accessResult = getTimetableAccessList();
+  var allowedEmails = accessResult.emails || [];
+  if (allowedEmails.length > 0) {
+    try {
+      var viewerEmail = Session.getActiveUser().getEmail().toLowerCase().trim();
+      var allowed = allowedEmails.some(function(e){ return e === viewerEmail; });
+      if (!allowed) {
+        return '<html><body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;background:#f5f7fa">' +
+          '<div style="text-align:center;padding:40px;background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,0.1)">' +
+          '<div style="font-size:48px;margin-bottom:16px">🔒</div>' +
+          '<div style="font-size:20px;font-weight:800;color:#1e293b;margin-bottom:8px">Access Restricted</div>' +
+          '<div style="font-size:14px;color:#64748b">Your account (' + viewerEmail + ') is not on the access list.<br>Contact your admin to request access.</div>' +
+          '</div></body></html>';
+      }
+    } catch(e) {
+      // If can't get user email, allow access (anonymous embed)
+    }
+  }
+  var ttResult = getTimetableData();
+  var ttRawData = ttResult.data || { teams:[], shifts:[], templates:[], assignments:[] };
+  // Labels are already part of ttRawData (saved via saveTimetableData)
+  if (!ttRawData.labels) ttRawData.labels = [];
+  var ttDataJson = JSON.stringify(ttRawData);
+  var html = HtmlService.createHtmlOutputFromFile('PublicView').getContent();
+  html = html.replace('"TIMETABLE_DATA_PLACEHOLDER"', ttDataJson);
+  return html;
+}
+
+
+// TIMETABLE BACKEND
+// =============================================
+function getTimetableData() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_DATA');
+    if (!sheet) return { success: true, data: { teams: [], shifts: [], templates: [], assignments: [] } };
+    var data = sheet.getDataRange().getValues();
+    var result = { teams: [], shifts: [], templates: [], assignments: [] };
+    for (var i = 0; i < data.length; i++) {
+      var key = String(data[i][0] || '').trim();
+      if (key) {
+        try { result[key] = JSON.parse(String(data[i][1] || '[]')); } catch(e) { result[key] = []; }
+      }
+    }
+    if (!result.labels) result.labels = [];
+    return { success: true, data: result };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveTimetableData(data) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_DATA');
+    if (!sheet) { sheet = ss.insertSheet('TIMETABLE_DATA'); }
+    sheet.clearContents();
+    var keys = ['teams', 'shifts', 'templates', 'assignments', 'labels'];
+    var rows = keys.map(function(k) { return [k, JSON.stringify(data[k] || [])]; });
+    sheet.getRange(1, 1, rows.length, 2).setValues(rows);
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+// ==========================================
+// BONUS ISSUE HISTORY
+// ==========================================
+function getBonusIssueHistory() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var histSheet = ss.getSheetByName('Bonus Issue History');
+    if (!histSheet) return { error: 'Sheet "Bonus Issue History" not found' };
+
+    var histData = histSheet.getDataRange().getValues();
+    if (histData.length < 2) return { success: true, rows: [], stages: [] };
+
+    var hdr = histData[0].map(function(h){ return String(h).trim(); });
+    function col(name) { return hdr.indexOf(name); }
+
+    var idxStage    = col('Stage');
+    var idxAmount   = col('Amount');
+    var idxCurrency = col('Currency');
+    var idxReceived = col('Date received');
+    var idxUpdated  = col('Updated at');
+    var idxExpiry   = col('Expiry date');
+
+    if (idxStage < 0 || idxAmount < 0 || idxCurrency < 0) {
+      return { error: 'Missing required columns. Found: ' + hdr.join(', ') };
+    }
+
+    var rateMap = buildEurRateMap_(ss);
+    var stagesSet = {};
+    var rows = []; // raw day-level rows
+
+    function fmtDate(d) {
+      if (!d) return null;
+      var dt = d instanceof Date ? d : new Date(String(d));
+      if (isNaN(dt.getTime())) return null;
+      return dt.getFullYear() + '-' + String(dt.getMonth()+1).padStart(2,'0') + '-' + String(dt.getDate()).padStart(2,'0');
+    }
+
+    for (var i = 1; i < histData.length; i++) {
+      var row      = histData[i];
+      var stage    = String(row[idxStage]   || '').trim();
+      var amount   = parseFloat(row[idxAmount] || 0) || 0;
+      var currency = String(row[idxCurrency] || '').trim().toUpperCase();
+      if (!stage) continue;
+      stagesSet[stage] = true;
+
+      var dRec = idxReceived >= 0 ? fmtDate(row[idxReceived]) : null;
+      var dUpd = idxUpdated  >= 0 ? fmtDate(row[idxUpdated])  : null;
+      var dExp = idxExpiry   >= 0 ? fmtDate(row[idxExpiry])   : null;
+
+      // Compute EUR amounts using rate from whichever date is available
+      function eurForDate(dateStr) {
+        if (!dateStr) return 0;
+        var moKey = dateStr.slice(0, 7);
+        var rate  = (currency !== 'EUR' && currency !== '') ? getEurRate_(rateMap, moKey, currency) : 1;
+        return Math.round(amount * rate * 100) / 100;
+      }
+
+      rows.push({
+        stage:    stage,
+        received: dRec,
+        updated:  dUpd,
+        expiry:   dExp,
+        eurRec:   dRec ? eurForDate(dRec) : 0,
+        eurUpd:   dUpd ? eurForDate(dUpd) : 0,
+        eurExp:   dExp ? eurForDate(dExp) : 0
+      });
+    }
+
+    var stageOrder = ['Lost','Won','Active','Not activated','Canceled','Expired'];
+    var stages = stageOrder.filter(function(s){ return stagesSet[s]; });
+    Object.keys(stagesSet).forEach(function(s){ if (stageOrder.indexOf(s) < 0) stages.push(s); });
+
+    return { success: true, rows: rows, stages: stages };
+  } catch(e) {
+    return { error: e.message };
+  }
+}
+
+function buildEurRateMap_(ss) {
+  // rateMap[YYYY-MM][CURRENCY] = avgRate
+  var rateMap = {};
+  try {
+    var sheets = ['BONUS REPORT [MONTHLY]', 'BONUS REPORT [DAILY]'];
+    sheets.forEach(function(sName) {
+      var sheet = ss.getSheetByName(sName);
+      if (!sheet) return;
+      var data = sheet.getDataRange().getValues();
+      if (data.length < 2) return;
+      var h = data[0].map(function(x){ return String(x).trim(); });
+      var cPeriod = h.indexOf('Period');
+      var cCur    = h.indexOf('Currency');
+      var cTotal  = h.indexOf('Total');
+      var cEur    = h.indexOf('Total in EUR');
+      if (cPeriod < 0 || cCur < 0 || cTotal < 0 || cEur < 0) return;
+      for (var i = 1; i < data.length; i++) {
+        var rawPeriod = data[i][cPeriod];
+        var cur       = String(data[i][cCur] || '').trim().toUpperCase();
+        var total     = parseFloat(data[i][cTotal]) || 0;
+        var eur       = parseFloat(data[i][cEur]) || 0;
+        if (!cur || cur === 'EUR' || total === 0 || eur === 0) continue;
+        var d = rawPeriod instanceof Date ? rawPeriod : new Date(String(rawPeriod));
+        if (isNaN(d.getTime())) continue;
+        var moKey = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0');
+        if (!rateMap[moKey]) rateMap[moKey] = {};
+        if (!rateMap[moKey][cur]) rateMap[moKey][cur] = { sum: 0, eurSum: 0 };
+        rateMap[moKey][cur].sum    += total;
+        rateMap[moKey][cur].eurSum += eur;
+      }
+    });
+    // Convert to rates
+    Object.keys(rateMap).forEach(function(mo) {
+      Object.keys(rateMap[mo]).forEach(function(cur) {
+        var e = rateMap[mo][cur];
+        rateMap[mo][cur] = e.sum > 0 ? e.eurSum / e.sum : 1;
+      });
+    });
+  } catch(e) { Logger.log('buildEurRateMap error: ' + e.message); }
+  return rateMap;
+}
+
+function getEurRate_(rateMap, moKey, currency) {
+  if (!rateMap) return 1;
+  // Exact month match
+  if (rateMap[moKey] && rateMap[moKey][currency]) return rateMap[moKey][currency];
+  // Find closest prior month
+  var keys = Object.keys(rateMap).filter(function(k){ return k <= moKey; }).sort();
+  for (var i = keys.length - 1; i >= 0; i--) {
+    if (rateMap[keys[i]][currency]) return rateMap[keys[i]][currency];
+  }
+  // Find any month for this currency
+  var anyKeys = Object.keys(rateMap).sort();
+  for (var j = 0; j < anyKeys.length; j++) {
+    if (rateMap[anyKeys[j]][currency]) return rateMap[anyKeys[j]][currency];
+  }
+  return 1;
+}
+
+function getIsoWeek_(date) {
+  var d = new Date(Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()));
+  var dayNum = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() + 4 - dayNum);
+  var yearStart = new Date(Date.UTC(d.getUTCFullYear(), 0, 1));
+  return { year: d.getUTCFullYear(), week: Math.ceil((((d - yearStart) / 86400000) + 1) / 7) };
+}
+
+// ==========================================
+// TIMETABLE REQUESTS
+// ==========================================
+function getTimetableRequests() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_REQUESTS');
+    if (!sheet) return { success: true, rows: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { success: true, rows: [] };
+    var rows = [];
+    for (var i = 1; i < data.length; i++) {
+      rows.push({
+        id:        String(data[i][0] || ''),
+        email:     String(data[i][1] || ''),
+        name:      String(data[i][2] || ''),
+        type:      String(data[i][3] || ''), // 'day_off' | 'swap'
+        date:      String(data[i][4] || ''),
+        dateEnd:   String(data[i][5] || ''),
+        swapWith:  String(data[i][6] || ''),
+        note:      String(data[i][7] || ''),
+        status:    String(data[i][8] || 'pending'), // 'pending'|'approved'|'rejected'
+        createdAt: String(data[i][9] || ''),
+        decidedBy: String(data[i][10] || ''),
+        decidedAt: String(data[i][11] || '')
+      });
+    }
+    return { success: true, rows: rows };
+  } catch(e) { return { error: e.message }; }
+}
+
+function saveTimetableRequest(req) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_REQUESTS');
+    if (!sheet) {
+      sheet = ss.insertSheet('TIMETABLE_REQUESTS');
+      sheet.getRange(1,1,1,12).setValues([['ID','Email','Name','Type','Date','DateEnd','SwapWith','Note','Status','CreatedAt','DecidedBy','DecidedAt']]);
+      sheet.getRange(1,1,1,12).setFontWeight('bold').setBackground('#6366f1').setFontColor('#fff');
+    }
+    var id = 'req_' + Date.now();
+    sheet.appendRow([
+      id, req.email||'', req.name||'', req.type||'', req.date||'', req.dateEnd||'',
+      req.swapWith||'', req.note||'', 'pending',
+      new Date().toLocaleString('uk-UA'), '', ''
+    ]);
+    return { success: true, id: id };
+  } catch(e) { return { error: e.message }; }
+}
+
+function decideTimetableRequest(id, decision, decidedBy) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('TIMETABLE_REQUESTS');
+    if (!sheet) return { error: 'Sheet not found' };
+    var data = sheet.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][0]) === id) {
+        sheet.getRange(i+1, 9).setValue(decision);  // Status
+        sheet.getRange(i+1,11).setValue(decidedBy||'');
+        sheet.getRange(i+1,12).setValue(new Date().toLocaleString('uk-UA'));
+        return { success: true };
+      }
+    }
+    return { error: 'Request not found' };
+  } catch(e) { return { error: e.message }; }
+}
