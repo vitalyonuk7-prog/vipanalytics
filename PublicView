@@ -96,11 +96,14 @@ function getShift(asgn, date) {
   return diff%cycle<(sh.workDays||5)?sh:null;
 }
 
-function lunchEnd(start, asgn) {
+function lunchEnd(start, asgn, dateKey) {
   if (!start) return '';
-  var dur = parseInt((asgn&&asgn.lunchDuration)||60);
+  var dur = parseInt((dateKey&&asgn&&asgn.lunchDurationOverrides&&asgn.lunchDurationOverrides[dateKey]) || (asgn&&asgn.lunchDuration) || 60);
   var p=start.split(':'), total=parseInt(p[0])*60+parseInt(p[1]||0)+dur;
   return String(Math.floor(total/60)%24).padStart(2,'0')+':'+String(total%60).padStart(2,'0');
+}
+function getLunchDur(asgn, dateKey) {
+  return parseInt((dateKey&&asgn&&asgn.lunchDurationOverrides&&asgn.lunchDurationOverrides[dateKey]) || (asgn&&asgn.lunchDuration) || 60);
 }
 function getLunch(asgn, dateKey){
   if(!asgn) return null;
@@ -293,7 +296,7 @@ function renderWeek(main,teamAs,tod){
         var _n2=document.createElement('div');_n2.style.cssText='font-size:11px;color:'+col+';opacity:0.75;margin-top:2px';_n2.textContent=s+'–'+e2;inner.appendChild(_n2);
         // Lunch badge (always same height slot — empty if no lunch)
         var _lunchWrap=document.createElement('div');_lunchWrap.style.cssText='margin-top:5px;min-height:26px;display:flex;align-items:center;justify-content:center';
-        if(lunch){var _ls=document.createElement('span');_ls.style.cssText='display:inline-flex;align-items:center;gap:3px;padding:4px 9px;background:#fef3c7;border:1.5px solid #f59e0b;border-radius:6px;font-size:11px;font-weight:800;color:#d97706';_ls.textContent='🍽️ '+lunch+' – '+lunchEnd(lunch,asgn);_lunchWrap.appendChild(_ls);}
+        if(lunch){var _lDur=getLunchDur(asgn,key);var _lLong=_lDur>60;var _lBg=_lLong?'#fef2f2':'#fef3c7';var _lBdr=_lLong?'#ef4444':'#f59e0b';var _lCol=_lLong?'#dc2626':'#d97706';var _lIco=_lLong?'☕':'🍽️';var _lLabel=_lLong?'Break ':'';var _ls=document.createElement('span');_ls.style.cssText='display:inline-flex;align-items:center;gap:3px;padding:4px 9px;background:'+_lBg+';border:1.5px solid '+_lBdr+';border-radius:6px;font-size:11px;font-weight:800;color:'+_lCol;_ls.textContent=_lIco+' '+_lLabel+lunch+' – '+lunchEnd(lunch,asgn,key);_lunchWrap.appendChild(_ls);}
         inner.appendChild(_lunchWrap);
         // Labels (always same height slot — empty if no labels)
         var _lblWrap=document.createElement('div');_lblWrap.style.cssText='margin-top:3px;min-height:20px;display:flex;flex-wrap:wrap;gap:3px;justify-content:center;align-items:center';
@@ -410,12 +413,26 @@ function renderDay(main,teamAs,tod){
             cell.style.background=rgba(info.col,0.08);
             var lunch=adjTime(getLunch(info.asgn,key));
             var lunchH=lunch?parseInt(lunch.split(':')[0]):-1;
+            // Check if this hour is within the lunch break (but not start)
+            var _lDurH=getLunchDur(info.asgn,key);
+            var _lEndTotalMin=lunchH>=0?(lunchH*60+(lunch?parseInt(lunch.split(':')[1]||0):0)+_lDurH):0;
+            var _lEndH=Math.floor(_lEndTotalMin/60)%24;
+            var _lEndM=_lEndTotalMin%60;
+            var _isInLunch=lunchH>=0&&hr>lunchH&&(hr<_lEndH||(hr===_lEndH&&_lEndM>0));
             if(hr===lunchH){
-              cell.style.background='#fffbeb';
-              cell.innerHTML='<div style="width:100%;height:100%;padding:6px 8px;background:#fffbeb;border-left:3px solid #f59e0b;display:flex;flex-direction:column;justify-content:center">'+
-                '<div style="font-size:12px;font-weight:800;color:#d97706">🍽️ Lunch</div>'+
-                '<div style="font-size:11px;color:#f59e0b;margin-top:2px">'+lunch+' – '+lunchEnd(lunch,info.asgn)+'</div>'+
+              var _hvDur=_lDurH;var _hvLong=_hvDur>60;
+              var _hvBg=_hvLong?'#fef2f2':'#fffbeb';var _hvBdr=_hvLong?'#ef4444':'#f59e0b';var _hvCol=_hvLong?'#dc2626':'#d97706';
+              var _hvIco=_hvLong?'☕':'🍽️';var _hvLbl=_hvLong?'Break':'Lunch';
+              var _spanPx=Math.round((_hvDur/60)*56);
+              cell.style.cssText+='position:relative;background:'+_hvBg+';overflow:visible;z-index:2;';
+              cell.innerHTML='<div style="position:absolute;top:3px;left:3px;right:3px;height:'+(_spanPx-6)+'px;border-radius:8px;background:'+_hvBg+';border:1.5px solid '+_hvBdr+';display:flex;flex-direction:column;justify-content:flex-start;padding:8px 10px;z-index:3;box-sizing:border-box;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">'+
+                '<div style="font-size:12px;font-weight:800;color:'+_hvCol+';display:flex;align-items:center;gap:4px">'+_hvIco+' '+_hvLbl+'</div>'+
+                '<div style="font-size:11px;color:'+_hvCol+';opacity:0.7;margin-top:3px;font-weight:600">'+lunch+' – '+lunchEnd(lunch,info.asgn,key)+'</div>'+
                 '</div>';
+            } else if(_isInLunch){
+              // Hours covered by the long break — color them but no content
+              var _hvDur2=_lDurH;var _hvLong2=_hvDur2>60;
+              cell.style.background=_hvLong2?'#fef2f2':'#fffbeb';
             } else if(hr===info.sH){
               var lbls=(info.asgn.dayLabels||{})[key]||[];
               var lblHtml=lbls.map(function(lid){var l=(ttData.labels||[]).find(function(x){return x.id===lid;});return l?'<span onmouseenter="showLblTip(event,'+JSON.stringify(l.text)+','+JSON.stringify(l.description||'')+')" onmouseleave="hideLblTip()" style="padding:1px 4px;border-radius:3px;font-size:7px;font-weight:700;background:'+l.color+';color:'+(l.textColor||'#fff')+';cursor:pointer">'+l.text+'</span>':''}).join(' ');
