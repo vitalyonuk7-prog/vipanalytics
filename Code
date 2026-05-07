@@ -405,8 +405,20 @@ function getOnboardingAssignments() {
     if (!sheet) return { success: true, assignments: [] };
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return { success: true, assignments: [] };
+    // Support both old format (all in row 2) and new format (one per row from row 2)
     var assignments = [];
-    try { assignments = JSON.parse(String(data[1][0] || '[]')); } catch(e) { assignments = []; }
+    var row2 = String(data[1][0] || '').trim();
+    if (row2.startsWith('[')) {
+      // Old format — all in one cell
+      try { assignments = JSON.parse(row2); } catch(e) { assignments = []; }
+    } else {
+      // New format — one per row
+      for (var i = 1; i < data.length; i++) {
+        var raw = String(data[i][0] || '').trim();
+        if (!raw) continue;
+        try { assignments.push(JSON.parse(raw)); } catch(e) {}
+      }
+    }
     return { success: true, assignments: assignments };
   } catch(e) { return { error: e.message }; }
 }
@@ -420,8 +432,13 @@ function saveOnboardingAssignments(assignments) {
       sheet.getRange(1,1).setValue('assignments_json');
       sheet.getRange(1,1).setFontWeight('bold').setBackground('#6366f1').setFontColor('#fff');
     }
-    if (sheet.getLastRow() < 2) sheet.appendRow(['']);
-    sheet.getRange(2, 1).setValue(JSON.stringify(assignments || []));
+    // Clear existing data rows
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 1).clearContent();
+    // Write one assignment per row
+    (assignments || []).forEach(function(a, i) {
+      sheet.getRange(i + 2, 1).setValue(JSON.stringify(a));
+    });
     return { success: true };
   } catch(e) { return { error: e.message }; }
 }
@@ -446,9 +463,11 @@ function getAccessUsers() {
     for (var i = 1; i < data.length; i++) {
       var email = String(data[i][emailIdx] || '').trim().toLowerCase();
       if (!email) continue;
+      var nickIdx  = headers.indexOf('nickname');
       var manager = managerIdx >= 0 ? String(data[i][managerIdx] || '').trim() : '';
       var role    = roleIdx    >= 0 ? String(data[i][roleIdx]    || '').trim() : '';
-      users.push({ email: email, name: manager || email.split('@')[0], role: role });
+      var nickname = nickIdx  >= 0 ? String(data[i][nickIdx]    || '').trim() : '';
+      users.push({ email: email, name: nickname || manager || email.split('@')[0], nickname: nickname, manager: manager, role: role });
     }
     return { success: true, users: users };
   } catch(e) { return { error: e.message }; }
@@ -462,7 +481,18 @@ function getOnboardingPlans() {
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return { success: true, plans: [] };
     var plans = [];
-    try { plans = JSON.parse(String(data[1][0] || '[]')); } catch(e) { plans = []; }
+    var row2 = String(data[1][0] || '').trim();
+    if (row2.startsWith('[')) {
+      // Old format — all in one cell
+      try { plans = JSON.parse(row2); } catch(e) { plans = []; }
+    } else {
+      // New format — one per row
+      for (var i = 1; i < data.length; i++) {
+        var raw = String(data[i][0] || '').trim();
+        if (!raw) continue;
+        try { plans.push(JSON.parse(raw)); } catch(e) {}
+      }
+    }
     return { success: true, plans: plans };
   } catch(e) { return { error: e.message }; }
 }
@@ -476,11 +506,15 @@ function saveOnboardingPlans(plans) {
       sheet.getRange(1,1).setValue('plans_json');
       sheet.getRange(1,1).setFontWeight('bold').setBackground('#667eea').setFontColor('#fff');
     }
-    if (sheet.getLastRow() < 2) sheet.appendRow(['']);
-    sheet.getRange(2, 1).setValue(JSON.stringify(plans || []));
+    var lastRow = sheet.getLastRow();
+    if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 1).clearContent();
+    (plans || []).forEach(function(p, i) {
+      sheet.getRange(i + 2, 1).setValue(JSON.stringify(p));
+    });
     return { success: true };
   } catch(e) { return { error: e.message }; }
 }
+
 
 function doGet(e) {
   if (e && e.parameter && e.parameter.view === 'public') {
@@ -719,7 +753,9 @@ function getDefaultPages_() {
     { id: 'calendar', name: 'Calendar', icon: '📅' },
     { id: 'lists', name: 'Player Lists', icon: '📋' },
     { id: 'timetable', name: 'Timetable', icon: '🗓️' },
-    { id: 'timetable_settings', name: 'Timetable Settings', icon: '⚙️🗓️' }
+    { id: 'timetable_settings', name: 'Timetable Settings', icon: '⚙️🗓️' },
+    { id: 'characters_edit', name: 'Characters (Edit All)', icon: '🎭' },
+    { id: 'payment_edit', name: 'Payment Methods (Edit)', icon: '💳✏️' }
   ];
 }
 
@@ -744,6 +780,9 @@ function getAdminPanelData() {
       result.allRoles = Object.keys(seenRoles).sort();
     }
     if (result.allRoles.length === 0) result.allRoles = ['admin', 'user'];
+    // Ensure built-in roles always present
+    ['admin', 'user'].forEach(function(r){ if (result.allRoles.indexOf(r) === -1) result.allRoles.push(r); });
+    result.allRoles.sort();
     
     var defaultPages = getDefaultPages_();
     result.pages = defaultPages;
@@ -972,6 +1011,51 @@ function adminAddRole(roleName) {
   } catch(e) {
     return { error: e.message };
   }
+}
+
+function adminRenameRole(params) {
+  try {
+    var oldName = String(params.oldName || '').trim().toLowerCase();
+    var newName = String(params.newName || '').trim().toLowerCase().replace(/\s+/g,'_');
+    if (!oldName || !newName) return { error: 'Both names required' };
+    if (oldName === 'admin' || oldName === 'user') return { error: 'Cannot rename built-in role' };
+    if (newName === 'admin' || newName === 'user') return { error: 'Cannot use built-in role name' };
+    if (oldName === newName) return { success: true };
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+
+    // 1. Rename in ROLES sheet
+    var rolesSheet = ss.getSheetByName('ROLES');
+    if (rolesSheet) {
+      var rData = rolesSheet.getDataRange().getValues();
+      var rH = rData[0].map(function(h){ return String(h).trim().toLowerCase(); });
+      var rCol = rH.indexOf('role');
+      if (rCol >= 0) {
+        for (var r = 1; r < rData.length; r++) {
+          if (String(rData[r][rCol]||'').trim().toLowerCase() === oldName) {
+            rolesSheet.getRange(r+1, rCol+1).setValue(newName);
+          }
+        }
+      }
+    }
+
+    // 2. Rename in ACCESS sheet (users that have this role)
+    var accessSheet = ss.getSheetByName('ACCESS');
+    if (accessSheet) {
+      var aData = accessSheet.getDataRange().getValues();
+      var aH = aData[0].map(function(h){ return String(h).trim().toLowerCase(); });
+      var aRoleCol = aH.indexOf('role');
+      if (aRoleCol >= 0) {
+        for (var a = 1; a < aData.length; a++) {
+          if (String(aData[a][aRoleCol]||'').trim().toLowerCase() === oldName) {
+            accessSheet.getRange(a+1, aRoleCol+1).setValue(newName);
+          }
+        }
+      }
+    }
+
+    return { success: true, newName: newName };
+  } catch(e) { return { error: e.message }; }
 }
 
 function adminDeleteRole(roleName) {
@@ -4028,16 +4112,16 @@ function toTitleCase(str) {
 function getUnifiedDashboardData() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var dashSheet = ss.getSheetByName('DASHBOARD');
+    var dashSheet = ss.getSheetByName('GENERAL DASHBOARD');
     
     if (!dashSheet) {
-      Logger.log('DASHBOARD sheet not found, falling back to prefix system');
+      Logger.log('GENERAL DASHBOARD sheet not found, falling back to prefix system');
       return getUnifiedFromPrefixSystem();
     }
     
-    Logger.log('=== Reading DASHBOARD sheet ===');
+    Logger.log('=== Reading GENERAL DASHBOARD sheet ===');
     var allPlayers = getVIPSheetData(dashSheet);
-    Logger.log('Total players in DASHBOARD: ' + allPlayers.length);
+    Logger.log('Total players in GENERAL DASHBOARD: ' + allPlayers.length);
     
     var vocabulary = getVocabulary();
     var managerResult = getManagerMapping();
@@ -4079,7 +4163,7 @@ function getUnifiedDashboardData() {
     });
     
     return {
-      source: 'DASHBOARD',
+      source: 'GENERAL DASHBOARD',
       types: typeNames,
       typesData: typesData,
       vocabulary: vocabulary,
@@ -4265,9 +4349,9 @@ function getVIPFilterOptions() {
     var allPlayers = [];
     
     // 1. Try DASHBOARD sheet first
-    var dashSheet = ss.getSheetByName('DASHBOARD');
+    var dashSheet = ss.getSheetByName('GENERAL DASHBOARD');
     if (dashSheet) {
-      Logger.log('=== VIP Filter Options (DASHBOARD sheet) ===');
+      Logger.log('=== VIP Filter Options (GENERAL DASHBOARD sheet) ===');
       allPlayers = getVIPSheetData(dashSheet);
     } else {
       // 2. Try dynamic prefix system
@@ -6776,6 +6860,7 @@ function sendSmsWebhook(params) {
     var text = String(params.text || '').trim();
     var locale = String(params.locale || 'en').trim();
     var sender = String(params.sender || '').trim();
+    var country = String(params.country || '').trim();
     
     if (!email) return { error: 'No email' };
     if (!phone) return { error: 'No phone' };
@@ -6793,10 +6878,14 @@ function sendSmsWebhook(params) {
       var logSheet = ss.getSheetByName('SMS_LOG');
       if (!logSheet) {
         logSheet = ss.insertSheet('SMS_LOG');
-        logSheet.appendRow(['date', 'sender', 'email', 'phone', 'locale', 'text']);
-        logSheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+        logSheet.appendRow(['date', 'sender', 'email', 'phone', 'locale', 'text', 'country', 'success']);
+        logSheet.getRange(1, 1, 1, 8).setFontWeight('bold');
       }
-      logSheet.appendRow([new Date().toLocaleString(), sender, email, phone, locale, text]);
+      // Add country and success columns if missing
+      var hdrs = logSheet.getRange(1, 1, 1, logSheet.getLastColumn()).getValues()[0].map(function(h){ return String(h).trim().toLowerCase(); });
+      if (hdrs.indexOf('country') === -1) { logSheet.getRange(1, hdrs.length+1).setValue('country'); hdrs.push('country'); }
+      if (hdrs.indexOf('success') === -1) { logSheet.getRange(1, hdrs.length+1).setValue('success'); }
+      logSheet.appendRow([new Date().toLocaleString(), sender, email, phone, locale, text, country, '']);
       return { success: true };
     } else {
       return { error: 'HTTP ' + code };
@@ -6821,6 +6910,9 @@ function getSmsHistory() {
     if (localeIdx === -1) localeIdx = headers.indexOf('locales');
     var textIdx = headers.indexOf('text');
     
+    var countryIdx = headers.indexOf('country');
+    var successIdx = headers.indexOf('success');
+    
     var rows = [];
     for (var i = data.length - 1; i >= 1; i--) {
       var r = data[i];
@@ -6830,12 +6922,122 @@ function getSmsHistory() {
         String(r[emailIdx >= 0 ? emailIdx : 2] || ''),
         String(r[phoneIdx >= 0 ? phoneIdx : 3] || ''),
         String(r[localeIdx >= 0 ? localeIdx : 4] || ''),
-        String(r[textIdx >= 0 ? textIdx : 5] || '')
+        String(r[textIdx >= 0 ? textIdx : 5] || ''),
+        String(r[countryIdx >= 0 ? countryIdx : -1] || ''),
+        String(r[successIdx >= 0 ? successIdx : -1] || '')
       ]);
       if (rows.length >= 100) break;
     }
     return { success: true, rows: rows };
   } catch (e) { return { error: e.toString() }; }
+}
+
+function setSmsSuccess(params) {
+  try {
+    var email = String(params.email || '').trim();
+    var date = String(params.date || '').trim();
+    var value = (params.value === true || params.value === 'true') ? '✅' : (typeof params.value === 'string' && params.value !== 'false' ? params.value : '');
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('SMS_LOG');
+    if (!sheet) return { error: 'No SMS_LOG sheet' };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h){ return String(h).trim().toLowerCase(); });
+    var emailIdx = headers.indexOf('email');
+    var dateIdx = headers.indexOf('date');
+    var successIdx = headers.indexOf('success');
+    if (successIdx === -1) { successIdx = headers.length; sheet.getRange(1, successIdx+1).setValue('success'); }
+    for (var i = 1; i < data.length; i++) {
+      if (String(data[i][emailIdx]||'').trim() === email && String(data[i][dateIdx]||'').indexOf(date.substring(0,10)) !== -1) {
+        sheet.getRange(i+1, successIdx+1).setValue(value);
+        return { success: true };
+      }
+    }
+    return { error: 'Row not found' };
+  } catch(e) { return { error: e.toString() }; }
+}
+
+function getEmailCountryMap() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('GENERAL DASHBOARD');
+    if (!sheet) return { map: {} };
+    var data = sheet.getDataRange().getValues();
+    var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
+    var emailCol = headers.indexOf('email');
+    var countryCol = headers.indexOf('country');
+    if (emailCol === -1 || countryCol === -1) return { map: {} };
+    var map = {};
+    for (var i = 1; i < data.length; i++) {
+      var em = String(data[i][emailCol] || '').trim().toLowerCase();
+      var co = String(data[i][countryCol] || '').trim();
+      if (em && co) map[em] = co;
+    }
+    return { map: map };
+  } catch(e) { return { map: {}, error: e.toString() }; }
+}
+
+function getPaymentMethods() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PAYMENT_METHODS');
+    if (!sheet) return { methods: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { methods: [] };
+    var methods = [];
+    for (var i = 1; i < data.length; i++) {
+      var raw = String(data[i][0] || '').trim();
+      if (!raw) continue;
+      try { methods.push(JSON.parse(raw)); } catch(e) {}
+    }
+    return { methods: methods };
+  } catch(e) { return { methods: [], error: e.toString() }; }
+}
+
+function uploadPaymentIcon(params) {
+  try {
+    var base64 = params.base64; // data:image/...;base64,...
+    var methodId = params.methodId || 'icon';
+    var mimeMatch = base64.match(/^data:([^;]+);base64,/);
+    if (!mimeMatch) return { error: 'Invalid image data' };
+    var mime = mimeMatch[1];
+    var ext = mime.split('/')[1] || 'png';
+    var data = base64.replace(/^data:[^;]+;base64,/, '');
+    var blob = Utilities.newBlob(Utilities.base64Decode(data), mime, 'pay_icon_' + methodId + '.' + ext);
+    // Find or create PaymentIcons folder in Drive
+    var folderName = 'SlotornadoPaymentIcons';
+    var folders = DriveApp.getFoldersByName(folderName);
+    var folder = folders.hasNext() ? folders.next() : DriveApp.createFolder(folderName);
+    // Remove old icon for this method if exists
+    var existing = folder.getFilesByName('pay_icon_' + methodId + '.' + ext);
+    while (existing.hasNext()) existing.next().setTrashed(true);
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var url = 'https://drive.google.com/thumbnail?id=' + file.getId() + '&sz=w128';
+    return { success: true, url: url };
+  } catch(e) { return { error: e.toString() }; }
+}
+
+function savePaymentMethods(methods) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PAYMENT_METHODS');
+    if (!sheet) {
+      sheet = ss.insertSheet('PAYMENT_METHODS');
+      sheet.getRange(1,1).setValue('data');
+      sheet.getRange(1,1).setFontWeight('bold');
+    }
+    // Strip base64 icons (they're too large for Sheets — URLs should already be uploaded)
+    var clean = methods.map(function(m) {
+      var mc = JSON.parse(JSON.stringify(m));
+      if (mc.icon && mc.icon.startsWith('data:')) mc.icon = '';
+      return mc;
+    });
+    if (sheet.getLastRow() > 1) sheet.getRange(2,1,sheet.getLastRow()-1,1).clearContent();
+    clean.forEach(function(m, i) {
+      sheet.getRange(i+2, 1).setValue(JSON.stringify(m));
+    });
+    return { success: true };
+  } catch(e) { return { error: e.toString() }; }
 }
 
 function getSmsTemplates() {
@@ -8087,5 +8289,185 @@ function decideTimetableRequest(id, decision, decidedBy) {
       }
     }
     return { error: 'Request not found' };
+  } catch(e) { return { error: e.message }; }
+}
+
+// =============================================
+// CHARACTERS — DRIVE PHOTO UPLOAD
+// =============================================
+
+var CHARS_DRIVE_FOLDER_NAME = 'Slotornado Characters';
+
+function _getCharsFolderForChar(charName) {
+  var root = _getCharsRootFolder();
+  var name = (charName || 'Unknown').trim();
+  var iter = root.getFoldersByName(name);
+  if (iter.hasNext()) return iter.next();
+  return root.createFolder(name);
+}
+
+function _getCharsRootFolder() {
+  var root = DriveApp.getRootFolder();
+  var iter = root.getFoldersByName(CHARS_DRIVE_FOLDER_NAME);
+  if (iter.hasNext()) return iter.next();
+  return root.createFolder(CHARS_DRIVE_FOLDER_NAME);
+}
+
+/**
+ * Upload a photo for a character.
+ * params: { charName, fileName, mimeType, base64Data }
+ * Returns: { success, url, fileId, thumbnailUrl }
+ */
+function uploadCharPhoto(params) {
+  try {
+    var folder = _getCharsFolderForChar(params.charName || 'Unknown');
+    var bytes = Utilities.base64Decode(params.base64Data);
+    var blob = Utilities.newBlob(bytes, params.mimeType || 'image/jpeg', params.fileName || 'photo.jpg');
+    var file = folder.createFile(blob);
+    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
+    var fileId = file.getId();
+    var url = 'https://drive.google.com/uc?export=view&id=' + fileId;
+    var thumb = 'https://drive.google.com/thumbnail?id=' + fileId + '&sz=w400';
+    return { success: true, url: url, fileId: fileId, thumbnailUrl: thumb, fileName: params.fileName };
+  } catch(e) { return { error: e.message }; }
+}
+
+/**
+ * Delete a photo from Drive by fileId.
+ */
+function deleteCharPhoto(fileId) {
+  try {
+    var file = DriveApp.getFileById(fileId);
+    file.setTrashed(true);
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+/**
+ * Get all photos in a character's folder.
+ * Returns: { success, photos: [{fileId, url, thumbnailUrl, name, createdDate}] }
+ */
+function getCharPhotos(charName) {
+  try {
+    var folder = _getCharsFolderForChar(charName || 'Unknown');
+    var files = folder.getFiles();
+    var photos = [];
+    var imageTypes = ['image/jpeg','image/png','image/gif','image/webp'];
+    while (files.hasNext()) {
+      var f = files.next();
+      if (imageTypes.indexOf(f.getMimeType()) === -1) continue;
+      var id = f.getId();
+      photos.push({
+        fileId: id,
+        url: 'https://drive.google.com/uc?export=view&id=' + id,
+        thumbnailUrl: 'https://drive.google.com/thumbnail?id=' + id + '&sz=w400',
+        name: f.getName(),
+        createdDate: f.getDateCreated().toISOString()
+      });
+    }
+    photos.sort(function(a,b){ return b.createdDate.localeCompare(a.createdDate); });
+    return { success: true, photos: photos };
+  } catch(e) { return { error: e.message }; }
+}
+
+/**
+ * Get all photos for ALL characters at once (for splash preload).
+ * Returns: { allPhotos: { "Ann": [...], "Kevin": [...] } }
+ */
+function getAllCharPhotos() {
+  try {
+    var root = _getCharsRootFolder();
+    var allPhotos = {};
+    var folderIter = root.getFolders();
+    var imageTypes = ['image/jpeg','image/png','image/gif','image/webp'];
+    while (folderIter.hasNext()) {
+      var folder = folderIter.next();
+      var name = folder.getName();
+      var files = folder.getFiles();
+      var photos = [];
+      while (files.hasNext()) {
+        var f = files.next();
+        if (imageTypes.indexOf(f.getMimeType()) === -1) continue;
+        var id = f.getId();
+        photos.push({
+          fileId: id,
+          url: 'https://drive.google.com/uc?export=view&id=' + id,
+          thumbnailUrl: 'https://drive.google.com/thumbnail?id=' + id + '&sz=w400',
+          name: f.getName(),
+          createdDate: f.getDateCreated().toISOString()
+        });
+      }
+      photos.sort(function(a,b){ return b.createdDate.localeCompare(a.createdDate); });
+      allPhotos[name] = photos;
+    }
+    return { success: true, allPhotos: allPhotos };
+  } catch(e) { return { error: e.message, allPhotos: {} }; }
+}
+
+// =============================================
+// WELCOME EMAIL
+// =============================================
+function sendWelcomeEmail(params) {
+  try {
+    var email    = String(params.email    || '').trim();
+    var password = String(params.password || '').trim();
+    var nickname = String(params.nickname || '').trim();
+    var appUrl   = ScriptApp.getService().getUrl();
+
+    var displayName = nickname || email.split('@')[0];
+
+    var htmlBody = '<div style="font-family:-apple-system,BlinkMacSystemFont,\'Segoe UI\',sans-serif;max-width:560px;margin:0 auto;background:#f8fafc;padding:32px 16px">' +
+      '<div style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 24px rgba(0,0,0,0.08)">' +
+        // Header
+        '<div style="background:linear-gradient(135deg,#6366f1,#4f46e5);padding:36px 32px;text-align:center">' +
+          '<div style="display:inline-block;background:rgba(255,255,255,0.15);border-radius:14px;padding:10px 22px;margin-bottom:14px">' +
+            '<span style="font-size:20px;font-weight:900;color:#fff;letter-spacing:1px;font-family:Arial,sans-serif">Welcome to VIP International!</span>' +
+          '</div>' +
+          '<div style="font-size:13px;color:rgba(255,255,255,0.75);margin-top:4px">VIP International CRM</div>' +
+        '</div>' +
+        // Body
+        '<div style="padding:32px">' +
+          '<p style="font-size:15px;color:#1e293b;margin:0 0 8px">Hi <strong>' + displayName + '</strong>,</p>' +
+          '<p style="font-size:14px;color:#475569;line-height:1.6;margin:0 0 24px">Your account has been created on the <strong>VIP International CRM</strong> — the internal service of the VIP department. You can log in right now using the credentials below.</p>' +
+          // Credentials box
+          '<div style="background:#f1f5f9;border-radius:12px;padding:20px 24px;margin-bottom:24px;border-left:4px solid #6366f1">' +
+            '<div style="font-size:11px;font-weight:700;color:#6366f1;text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px">Your Login Credentials</div>' +
+            '<table style="width:100%;border-collapse:collapse">' +
+              '<tr><td style="font-size:12px;color:#64748b;font-weight:600;padding:5px 0;width:80px">Login</td><td style="font-size:14px;font-weight:700;color:#1e293b;padding:5px 0">' + email + '</td></tr>' +
+              '<tr><td style="font-size:12px;color:#64748b;font-weight:600;padding:5px 0">Password</td><td style="font-size:14px;font-weight:700;color:#1e293b;padding:5px 0;font-family:monospace">' + password + '</td></tr>' +
+            '</table>' +
+          '</div>' +
+          // Warning
+          '<div style="background:#fef3c7;border-radius:10px;padding:14px 18px;margin-bottom:24px;display:flex;align-items:flex-start;gap:10px">' +
+            '<span style="font-size:18px;flex-shrink:0">⚠️</span>' +
+            '<div style="font-size:13px;color:#92400e;line-height:1.5"><strong>These are temporary credentials.</strong><br>Please change your password immediately after your first login.</div>' +
+          '</div>' +
+          // CTA button
+          '<div style="text-align:center;margin-bottom:28px">' +
+            '<a href="' + appUrl + '" style="display:inline-block;background:linear-gradient(135deg,#6366f1,#4f46e5);color:#fff;text-decoration:none;font-size:14px;font-weight:700;padding:14px 32px;border-radius:10px;letter-spacing:.2px">Open CRM →</a>' +
+          '</div>' +
+          '<p style="font-size:13px;color:#94a3b8;text-align:center;margin:0">Or copy this link:<br><a href="' + appUrl + '" style="color:#6366f1;font-size:12px;word-break:break-all">' + appUrl + '</a></p>' +
+        '</div>' +
+        // Footer
+        '<div style="padding:20px 32px;background:#f8fafc;border-top:1px solid #e2e8f0;text-align:center">' +
+          '<p style="font-size:11px;color:#94a3b8;margin:0">This message was sent automatically by Slotornado CRM.<br>If you have any questions, contact your manager.</p>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+
+    var textBody = 'Hi ' + displayName + ',\n\n' +
+      'Your account has been created on the VIP International CRM.\n\n' +
+      'Login: ' + email + '\n' +
+      'Password: ' + password + ' (TEMPORARY — change it after first login)\n\n' +
+      'Open CRM: ' + appUrl + '\n\n' +
+      '⚠️ Please change your password immediately after your first login.\n\n' +
+      '— Slotornado CRM';
+
+    GmailApp.sendEmail(email,
+      'Welcome to Slotornado CRM — Your Account is Ready',
+      textBody,
+      { htmlBody: htmlBody, name: 'Slotornado CRM' }
+    );
+    return { success: true };
   } catch(e) { return { error: e.message }; }
 }
