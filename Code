@@ -921,6 +921,101 @@ function generateTempPassword_() {
   return String(Math.floor(1000 + Math.random() * 9000));
 }
 
+/* ━━━━━━━━━━━━━━━━━━━ USER ACTIVITY LOGS ━━━━━━━━━━━━━━━━━━━ */
+
+/**
+ * Ensure the USER_ACTIVITY sheet exists with headers.
+ * Sheet columns: Timestamp | Email | Nickname | Action | Page | Details | UserAgent
+ */
+function _ensureActivityLogSheet_() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sheet = ss.getSheetByName('USER_ACTIVITY');
+  if (!sheet) {
+    sheet = ss.insertSheet('USER_ACTIVITY');
+    sheet.getRange(1, 1, 1, 7).setValues([['Timestamp', 'Email', 'Nickname', 'Action', 'Page', 'Details', 'UserAgent']]);
+    sheet.getRange(1, 1, 1, 7).setFontWeight('bold').setBackground('#e2e8f0');
+    sheet.setFrozenRows(1);
+    // Hide it from main view (still accessible programmatically)
+    try { sheet.hideSheet(); } catch (e) {}
+  }
+  return sheet;
+}
+
+/**
+ * Append a single activity log entry.
+ * Called from the frontend via google.script.run.logUserActivity(...).
+ * Designed to fail silently — logging should never break the UI flow.
+ */
+function logUserActivity(params) {
+  try {
+    if (!params || typeof params !== 'object') return { success: false };
+    var sheet = _ensureActivityLogSheet_();
+    var row = [
+      new Date(),
+      String(params.email || '').trim(),
+      String(params.nickname || '').trim(),
+      String(params.action || '').trim(),
+      String(params.page || '').trim(),
+      typeof params.details === 'object' ? JSON.stringify(params.details) : String(params.details || ''),
+      String(params.userAgent || '').substring(0, 200)
+    ];
+    sheet.appendRow(row);
+    return { success: true };
+  } catch (e) {
+    Logger.log('logUserActivity error: ' + e);
+    return { success: false, error: e.toString() };
+  }
+}
+
+/**
+ * Read activity logs with optional filters.
+ * Returns most recent first; capped at `limit` rows (default 500).
+ */
+function getUserActivityLogs(params) {
+  try {
+    params = params || {};
+    var limit = parseInt(params.limit || 500, 10);
+    var emailFilter = String(params.email || '').trim().toLowerCase();
+    var actionFilter = String(params.action || '').trim().toLowerCase();
+    var sinceMs = params.sinceTs ? parseInt(params.sinceTs, 10) : null;
+    
+    var sheet = _ensureActivityLogSheet_();
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true, logs: [] };
+    
+    // Read up to last 5000 rows (most recent), filter in memory
+    var startRow = Math.max(2, lastRow - 5000 + 1);
+    var numRows = lastRow - startRow + 1;
+    var data = sheet.getRange(startRow, 1, numRows, 7).getValues();
+    
+    var logs = [];
+    for (var i = data.length - 1; i >= 0; i--) {
+      var r = data[i];
+      var ts = r[0];
+      var tsMs = (ts instanceof Date) ? ts.getTime() : (new Date(ts)).getTime();
+      if (sinceMs && tsMs < sinceMs) continue;
+      var email = String(r[1] || '').toLowerCase();
+      var action = String(r[3] || '').toLowerCase();
+      if (emailFilter && email.indexOf(emailFilter) === -1) continue;
+      if (actionFilter && action.indexOf(actionFilter) === -1) continue;
+      logs.push({
+        ts: tsMs,
+        tsISO: (ts instanceof Date) ? ts.toISOString() : String(ts),
+        email: String(r[1] || ''),
+        nickname: String(r[2] || ''),
+        action: String(r[3] || ''),
+        page: String(r[4] || ''),
+        details: String(r[5] || ''),
+        userAgent: String(r[6] || '')
+      });
+      if (logs.length >= limit) break;
+    }
+    return { success: true, logs: logs };
+  } catch (e) {
+    return { success: false, error: e.toString() };
+  }
+}
+
 function adminCreateUser(params) {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -1589,6 +1684,13 @@ function getVIPSheetData(sheet) {
       if (header) {
         var value = row[j];
         
+        // CRITICAL: Convert Date objects to ISO strings — Apps Script can't
+        // serialize Date objects when returning data to client side (causes
+        // GoogleJsonResponseException / "Sn" error in console).
+        if (value instanceof Date) {
+          try { value = value.toISOString(); } catch (e) { value = String(value); }
+        }
+        
         // Parse tags from JSON string to array
         if (header === 'tags' && value) {
           try {
@@ -1610,8 +1712,12 @@ function getVIPSheetData(sheet) {
       }
     }
     
-    // Only add if has id
-    if (playerObj.id) {
+    // Accept player if has ANY identifier (id / ID / email / Email)
+    var hasId = playerObj.id || playerObj.ID || playerObj.email || playerObj.Email || playerObj.EMAIL;
+    if (hasId) {
+      // Normalize: ensure .id and .email always exist
+      if (!playerObj.id) playerObj.id = playerObj.ID || playerObj.email || playerObj.Email || playerObj.EMAIL;
+      if (!playerObj.email) playerObj.email = playerObj.Email || playerObj.EMAIL || '';
       result.push(playerObj);
     }
   }
@@ -4162,7 +4268,7 @@ function getUnifiedDashboardData() {
       };
     });
     
-    return {
+    var finalResult = {
       source: 'GENERAL DASHBOARD',
       types: typeNames,
       typesData: typesData,
@@ -4171,6 +4277,14 @@ function getUnifiedDashboardData() {
       managers: Object.keys(managerResult.managerMapping).sort(),
       typeMapping: typeMappingResult.typeMapping
     };
+    // Sanitize via JSON round-trip to guarantee Apps Script can serialize it
+    // (strips functions, normalizes Date objects to strings, removes circular refs)
+    try {
+      finalResult = JSON.parse(JSON.stringify(finalResult));
+    } catch (e) {
+      Logger.log('Sanitize failed: ' + e);
+    }
+    return finalResult;
     
   } catch (error) {
     Logger.log('ERROR in getUnifiedDashboardData: ' + error.toString());
@@ -4244,16 +4358,32 @@ function getUnifiedFromPrefixSystem() {
  */
 function detectPlayerType(tags, tagToType) {
   var result = { type: 'Other', subType: '' };
-  if (!tags || !Array.isArray(tags) || !tagToType) return result;
+  if (!tags || !Array.isArray(tags) || tags.length === 0) return result;
   
-  for (var i = 0; i < tags.length; i++) {
-    var tag = String(tags[i]).toLowerCase().trim();
-    if (tagToType[tag]) {
-      return { type: tagToType[tag], subType: tagToType[tag] };
+  // 1) Try direct lookup against TYPE sheet mapping
+  if (tagToType) {
+    for (var i = 0; i < tags.length; i++) {
+      var tag = String(tags[i]).toLowerCase().trim();
+      if (tagToType[tag]) {
+        return { type: tagToType[tag], subType: tagToType[tag] };
+      }
     }
   }
   
-  return result;
+  // 2) Fallback: pattern-match on tag names (so players still get classified
+  //    even if TYPE sheet is missing or incomplete)
+  for (var k = 0; k < tags.length; k++) {
+    var t = String(tags[k]).toLowerCase().trim();
+    if (!t) continue;
+    if (t.indexOf('churn') !== -1)   return { type: 'CHURN VIP',      subType: 'CHURN VIP' };
+    if (t.indexOf('pre_vip') !== -1 || t.indexOf('pre-vip') !== -1 || t.indexOf('previp') !== -1) return { type: 'PRE-VIP', subType: 'PRE-VIP' };
+    if (t === 'silent' || t.indexOf('silent') !== -1)  return { type: 'SILENT VIP',     subType: 'SILENT VIP' };
+    if (t.indexOf('vip') !== -1)     return { type: 'VIP',            subType: 'VIP' };
+    if (t.indexOf('pre_') === 0)     return { type: 'PRE-VIP',        subType: 'PRE-VIP' };
+  }
+  // 3) If still nothing → first tag = name (likely a manager tag like "ann", "kevin")
+  //    Group these as SILENT VIP by convention
+  return { type: 'SILENT VIP', subType: 'SILENT VIP' };
 }
 
 /**
@@ -4594,6 +4724,20 @@ function savePlayerContact(email, dateStr) {
   } catch(e) { return { error: e.message }; }
 }
 
+/**
+ * Returns the currently-configured profiling sheet.
+ * Pre-migration: 'PROFILING'. Post-migration: 'GENERAL DASHBOARD'.
+ * All non-migration profiling functions should use this helper.
+ */
+function _getProfilingSheet(ss) {
+  if (!ss) ss = SpreadsheetApp.getActiveSpreadsheet();
+  var name = PropertiesService.getDocumentProperties().getProperty('PROFILING_SHEET_NAME') || 'PROFILING';
+  return ss.getSheetByName(name) 
+      || ss.getSheetByName('[' + name + ']') 
+      || ss.getSheetByName('PROFILING') 
+      || ss.getSheetByName('[PROFILING]');
+}
+
 function getPlayerProfilingData() {
   var output = { players: [], fieldConfig: {}, managerMapping: {}, success: false, error: null };
   
@@ -4602,14 +4746,16 @@ function getPlayerProfilingData() {
     
     Logger.log('=== getPlayerProfilingData START ===');
     
-    // ✅ Read single PROFILING sheet
-    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    // ✅ Read configured sheet (PROFILING by default, GENERAL DASHBOARD after migration)
+    var sheetName = PropertiesService.getDocumentProperties().getProperty('PROFILING_SHEET_NAME') || 'PROFILING';
+    var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName('[' + sheetName + ']') || ss.getSheetByName('PROFILING');
     
     if (!sheet) {
-      Logger.log('ERROR: PROFILING sheet not found');
-      output.error = 'PROFILING sheet not found';
+      Logger.log('ERROR: profiling sheet not found (' + sheetName + ')');
+      output.error = sheetName + ' sheet not found';
       return output;
     }
+    Logger.log('Reading from sheet: ' + sheet.getName());
     
     var allData = sheet.getDataRange().getValues();
     
@@ -4630,10 +4776,28 @@ function getPlayerProfilingData() {
     }
     
     if (emailColumnIndex === -1) {
-      Logger.log('WARNING: No email column in PROFILING sheet');
+      Logger.log('WARNING: No email column in profiling sheet');
       output.error = 'No email column found';
       return output;
     }
+    
+    // Whitelist disabled — hiding is now done via the "Non Visible fields"
+    // section in admin (frontend skips that section in the player card).
+    var whitelist = null;
+    
+    // first_name/last_name → combined "name" virtual field detection
+    var firstNameCol = -1, lastNameCol = -1, nameCol = -1;
+    for (var hh = 0; hh < headerRow.length; hh++) {
+      var hLower = String(headerRow[hh] || '').toLowerCase().trim();
+      if (hLower === 'first_name' || hLower === 'firstname') firstNameCol = hh;
+      else if (hLower === 'last_name' || hLower === 'lastname') lastNameCol = hh;
+      else if (hLower === 'name') nameCol = hh;
+    }
+    // If whitelist asks for 'name' but the sheet doesn't have it (only first_name/last_name),
+    // create a virtual 'name' field from those two.
+    // Build virtual "name" whenever sheet has first_name/last_name but no "name" column.
+    var useVirtualName = (nameCol === -1 && (firstNameCol !== -1 || lastNameCol !== -1));
+    if (useVirtualName) Logger.log('Using virtual "name" field built from first_name + last_name');
     
     // Read all players
     for (var r = 1; r < allData.length; r++) {
@@ -4646,6 +4810,12 @@ function getPlayerProfilingData() {
       for (var c = 0; c < headerRow.length; c++) {
         var fieldName = String(headerRow[c] || '').trim();
         if (!fieldName) continue;
+        
+        var fnLower = fieldName.toLowerCase();
+        // Apply whitelist (if set) — only expose fields the original PROFILING had
+        if (whitelist && !whitelist[fnLower]) continue;
+        // If we're going to build a virtual 'name', hide raw first_name/last_name
+        if (useVirtualName && (fnLower === 'first_name' || fnLower === 'firstname' || fnLower === 'last_name' || fnLower === 'lastname')) continue;
         
         var cellValue = rowData[c];
         
@@ -4684,17 +4854,51 @@ function getPlayerProfilingData() {
         playerObject[fieldName] = (cellValue === undefined) ? '' : cellValue;
       }
       
+      // Build virtual "name" from first_name + last_name (when whitelist needs it)
+      if (useVirtualName) {
+        var fn = (firstNameCol !== -1) ? String(rowData[firstNameCol] || '').trim() : '';
+        var ln = (lastNameCol !== -1) ? String(rowData[lastNameCol] || '').trim() : '';
+        var combined = (fn + ' ' + ln).trim();
+        if (combined) playerObject.name = combined;
+      }
+      
       output.players.push(playerObject);
     }
     
     Logger.log('PROFILING: ' + output.players.length + ' players loaded');
     
-    // ✅ Load MANAGER mapping
+        // ✅ Load MANAGER mapping
     var mgrResult = getManagerMapping();
     output.managerMapping = mgrResult;
     
     // ✅ Load ATTENTION rules
     output.attentionRules = getAttentionRules();
+
+    // ✅ Load custom Banners (admin-panel managed)
+    try { output.bannerRules = getProfilingBanners(); } catch(bErr) { output.bannerRules = []; Logger.log('bannerRules err: ' + bErr); }
+
+    // ✅ Load Type Tabs (admin-panel managed; seed defaults on first run)
+    try {
+      var tabs = getProfilingTypeTabs();
+      if (!tabs.length) {
+        var seedRes = seedDefaultTypeTabs();
+        tabs = (seedRes && seedRes.tabs) ? seedRes.tabs : [];
+      }
+      output.typeTabs = tabs;
+    } catch(tErr) { output.typeTabs = []; Logger.log('typeTabs err: ' + tErr); }
+
+    // ✅ Load global settings (admin-panel managed)
+    try { output.settings = getProfilingSettings(); } catch(sErr) { output.settings = {}; }
+
+    // ✅ Load Manager Tabs (admin-panel managed; seed defaults on first run)
+    try {
+      var mTabs = getProfilingManagerTabs();
+      if (!mTabs.length) {
+        var seedM = seedDefaultManagerTabs();
+        mTabs = (seedM && seedM.tabs) ? seedM.tabs : [];
+      }
+      output.managerTabs = mTabs;
+    } catch(mErr) { output.managerTabs = []; Logger.log('managerTabs err: ' + mErr); }
     
     output.success = true;
     
@@ -4715,18 +4919,38 @@ function getPlayerProfilingData() {
         Logger.log('Warning: Could not read data validations: ' + dvErr);
       }
       
+      // Whitelist disabled — admin's "Non Visible fields" section handles hiding now.
+      var whitelistFC = null;
+      // Detect first_name/last_name → virtual name handling
+      var hasFirstName = false, hasLastName = false, hasName = false;
+      for (var __wi = 0; __wi < headers.length; __wi++) {
+        var __lh = String(headers[__wi] || '').toLowerCase().trim();
+        if (__lh === 'first_name' || __lh === 'firstname') hasFirstName = true;
+        else if (__lh === 'last_name' || __lh === 'lastname') hasLastName = true;
+        else if (__lh === 'name') hasName = true;
+      }
+      var useVirtualNameFC = (!hasName && (hasFirstName || hasLastName));
+      
       for (var hi = 0; hi < headers.length; hi++) {
         var rawHeader = String(headers[hi] || '').trim();
         if (!rawHeader) continue;
         
         var lowerHeader = rawHeader.toLowerCase();
         if (lowerHeader === 'tags' || lowerHeader === 'tag') continue;
+        // Apply whitelist
+        if (whitelistFC && !whitelistFC[lowerHeader]) continue;
+        // Hide raw first_name/last_name when virtual name is in use
+        if (useVirtualNameFC && (lowerHeader === 'first_name' || lowerHeader === 'firstname' || lowerHeader === 'last_name' || lowerHeader === 'lastname')) continue;
         
         var isPreview = rawHeader.charAt(0) === '*';
         var isPrevColumn = rawHeader.indexOf('[PREV]') !== -1;
+        var isIconCol = rawHeader.indexOf('[ICON]') !== -1;
+        var isBigIconCol = rawHeader.indexOf('[BICON]') !== -1;
         var cleanHeader = rawHeader;
         if (isPreview) cleanHeader = cleanHeader.substring(1).trim();
         if (isPrevColumn) cleanHeader = cleanHeader.replace(/\[PREV\]/gi, '').trim();
+        // NOTE: [ICON]/[BICON] markers are kept in label for backward compatibility
+        // (existing client functions getSocialLinks/getBigIconLinks parse the label).
         
         var sectionName = 'General';
         var sectionMatch = cleanHeader.match(/^(.+?)\s*\(([^)]+)\)\s*$/);
@@ -4737,8 +4961,20 @@ function getPlayerProfilingData() {
         
         var fieldType = 'text';
         var fieldOptions = null;
-        
-        if (lowerHeader.indexOf('birthday') !== -1 || lowerHeader.indexOf('dob') !== -1 || lowerHeader.indexOf('birth date') !== -1 || lowerHeader.indexOf('date') !== -1) {
+        var fieldPlatform = '';
+
+        // Icon-type columns (social / big icons) — drive UI rendering by type instead of marker.
+        if (isBigIconCol) {
+          fieldType = 'url-bicon';
+          var labelStripped = cleanHeader.replace(/\[BICON\]/gi, '').trim();
+          fieldPlatform = labelStripped.split(/\s+/)[0] || '';
+        } else if (isIconCol) {
+          fieldType = 'url-icon';
+          var labelStripped2 = cleanHeader.replace(/\[ICON\]/gi, '').trim();
+          fieldPlatform = labelStripped2.split(/\s+/)[0] || '';
+        }
+
+        if (fieldType === 'text' && (lowerHeader.indexOf('birthday') !== -1 || lowerHeader.indexOf('dob') !== -1 || lowerHeader.indexOf('birth date') !== -1 || lowerHeader.indexOf('date') !== -1)) {
           fieldType = 'date';
         }
         
@@ -4808,7 +5044,8 @@ function getPlayerProfilingData() {
           type: fieldType,
           section: sectionName,
           preview: isPrevColumn,
-          starred: isPreview
+          starred: isPreview,
+          platform: fieldPlatform
         };
         if (fieldOptions) output.fieldConfig[fieldKey].options = fieldOptions;
         
@@ -4817,10 +5054,27 @@ function getPlayerProfilingData() {
         sections[sectionName].push(fieldKey);
       }
       
+      // Add virtual "name" field when whitelist asks for it but sheet has first_name/last_name
+      if (useVirtualNameFC) {
+        output.fieldConfig['name'] = {
+          label: 'Name',
+          type: 'text',
+          section: 'General',
+          required: false,
+          platform: ''
+        };
+        order.unshift('name'); // put name first
+        if (!sections['General']) sections['General'] = [];
+        if (sections['General'].indexOf('name') === -1) sections['General'].unshift('name');
+      }
+      
       output.fieldConfig._order = order;
       output.fieldConfig._sections = sections;
       
       Logger.log('fieldConfig built: ' + order.length + ' fields, ' + Object.keys(sections).length + ' sections');
+
+      // ★ Apply admin-panel overrides (custom labels, types, sections, options, defaults, etc.)
+      try { _applyProfilingOverrides(output.fieldConfig); } catch(ovErr) { Logger.log('Override apply err: ' + ovErr); }
     }
     
     Logger.log('=== getPlayerProfilingData END: ' + output.players.length + ' players ===');
@@ -4838,31 +5092,61 @@ function getPlayerProfilingData() {
  */
 function updatePlayerProfiling(data) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheetName = data.sheetName || 'PROFILING';
-  var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName('[PROFILING]');
+  // Use the currently-configured profiling sheet — ignore stale sheetName from
+  // frontend (player objects loaded before migration would have sheetName='PROFILING').
+  var configuredSheet = PropertiesService.getDocumentProperties().getProperty('PROFILING_SHEET_NAME') || 'PROFILING';
+  var sheet = ss.getSheetByName(configuredSheet) || ss.getSheetByName('[' + configuredSheet + ']') || ss.getSheetByName('PROFILING');
   
-  if (!sheet) throw new Error('Sheet "' + sheetName + '" not found');
+  if (!sheet) throw new Error('Sheet "' + configuredSheet + '" not found');
   
   var rowIndex = data.rowIndex;
   if (!rowIndex || rowIndex < 2) throw new Error('Invalid row index: ' + rowIndex);
   
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   
-  Logger.log('updatePlayerProfiling: row=' + rowIndex + ', sheet=' + sheetName);
+  Logger.log('updatePlayerProfiling: row=' + rowIndex + ', sheet=' + configuredSheet);
   
-  for (var c = 0; c < headers.length; c++) {
+  // Virtual "name" handling — if incoming has "name" but sheet uses first_name/last_name,
+  // split it on the first space.
+  var headersLowerArr = headers.map(function(h){ return String(h || '').toLowerCase().trim(); });
+  var nameInData = false, nameValue = '';
+  Object.keys(data).forEach(function(k){
+    if (String(k).toLowerCase().trim() === 'name') { nameInData = true; nameValue = String(data[k] || '').trim(); }
+  });
+  if (nameInData && headersLowerArr.indexOf('name') === -1 && (headersLowerArr.indexOf('first_name') !== -1 || headersLowerArr.indexOf('last_name') !== -1)) {
+    var spaceIdx = nameValue.indexOf(' ');
+    var fnVal = (spaceIdx === -1) ? nameValue : nameValue.substring(0, spaceIdx);
+    var lnVal = (spaceIdx === -1) ? '' : nameValue.substring(spaceIdx + 1).trim();
+    data.first_name = fnVal;
+    data.last_name = lnVal;
+    Logger.log('Split virtual name "' + nameValue + '" → first="' + fnVal + '", last="' + lnVal + '"');
+  }
+  
+  var written = 0;
+  var skipped = [];
+  
+  // ━━ BATCH STRATEGY ━━
+  // Old approach: one getValue() + one setValue() per column = 50+ API calls.
+  // New approach: read entire row once, build new array, write whole row once.
+  // Fallback to per-cell only on validation errors.
+  
+  var numCols = headers.length;
+  var rowRange = sheet.getRange(rowIndex, 1, 1, numCols);
+  var existingRow = rowRange.getValues()[0]; // 1 read
+  var newRow = existingRow.slice();          // clone
+  var changedCols = [];                      // [{c, header, value}]
+  
+  for (var c = 0; c < numCols; c++) {
     var headerRaw = String(headers[c] || '').trim();
     if (!headerRaw) continue;
-    
     var headerLower = headerRaw.toLowerCase();
-    if (headerLower === 'tags' || headerLower === 'tag') continue; // Don't overwrite tags
+    if (headerLower === 'tags' || headerLower === 'tag') continue;
     
     // Try exact match first, then case-insensitive
     var value = undefined;
     if (data.hasOwnProperty(headerRaw)) {
       value = data[headerRaw];
     } else {
-      // Try matching by original keys (case-insensitive)
       var dataKeys = Object.keys(data);
       for (var k = 0; k < dataKeys.length; k++) {
         if (dataKeys[k].toLowerCase().trim() === headerLower) {
@@ -4872,13 +5156,66 @@ function updatePlayerProfiling(data) {
       }
     }
     
-    if (value !== undefined && value !== null) {
-      sheet.getRange(rowIndex, c + 1).setValue(value);
-    }
+    if (value === undefined || value === null) continue;
+    // Skip empty strings — never overwrite a cell with "" to avoid dropdown validation issues
+    if (typeof value === 'string' && value.trim() === '') continue;
+    
+    // Coerce arrays/objects
+    if (Array.isArray(value)) value = value.join(', ');
+    else if (typeof value === 'object' && !(value instanceof Date)) value = JSON.stringify(value);
+    
+    // Skip if unchanged
+    if (String(existingRow[c]) === String(value)) continue;
+    
+    newRow[c] = value;
+    changedCols.push({ c: c, header: headerRaw, value: value });
   }
   
-  Logger.log('✅ Player updated at row ' + rowIndex);
-  return { success: true, row: rowIndex };
+  if (changedCols.length === 0) {
+    Logger.log('✅ No changes to write for row ' + rowIndex);
+    return { success: true, row: rowIndex, written: 0, skipped: [] };
+  }
+  
+  // FAST PATH — try writing the whole row at once (1 API call)
+  try {
+    rowRange.setValues([newRow]);
+    written = changedCols.length;
+    Logger.log('✅ Batch write success: row ' + rowIndex + ' (' + written + ' fields)');
+  } catch (batchErr) {
+    // SLOW FALLBACK — at least one cell has data validation. Write changed cells one
+    // by one, bypassing validation only on the cells that need it.
+    Logger.log('⚠ Batch write failed (' + batchErr + ') — falling back to per-cell');
+    changedCols.forEach(function(ch) {
+      try {
+        var cell = sheet.getRange(rowIndex, ch.c + 1);
+        try {
+          cell.setValue(ch.value);
+          written++;
+        } catch (validationErr) {
+          try {
+            var rule = cell.getDataValidation();
+            cell.clearDataValidations();
+            cell.setValue(ch.value);
+            if (rule) {
+              try { cell.setDataValidation(rule); }
+              catch (restoreErr) { /* keep value, drop rule */ }
+            }
+            written++;
+            Logger.log('⚠️ Bypassed validation for "' + ch.header + '" = "' + ch.value + '"');
+          } catch (e2) {
+            Logger.log('❌ Could not write "' + ch.header + '": ' + e2);
+            skipped.push(ch.header);
+          }
+        }
+      } catch (cellErr) {
+        Logger.log('❌ Skipped "' + ch.header + '": ' + cellErr);
+        skipped.push(ch.header);
+      }
+    });
+  }
+  
+  Logger.log('✅ Player updated at row ' + rowIndex + ' | written=' + written + ' skipped=' + skipped.length);
+  return { success: true, row: rowIndex, written: written, skipped: skipped };
 }
 
 /**
@@ -4888,7 +5225,7 @@ function deletePlayer(playerEmail) {
   if (!playerEmail) throw new Error('No email provided');
   
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+  var sheet = _getProfilingSheet(ss);
   
   if (!sheet) throw new Error('PROFILING sheet not found');
   
@@ -5823,19 +6160,22 @@ function getCryptoAndForexRates() {
 function getUpcomingBirthdays() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    var sheet = _getProfilingSheet(ss);
     if (!sheet) return { birthdays: [] };
     
     var data = sheet.getDataRange().getValues();
     if (data.length < 2) return { birthdays: [] };
     
     var headers = data[0];
-    var emailCol = -1, nameCol = -1, bdayCol = -1, countryCol = -1;
+    var emailCol = -1, nameCol = -1, bdayCol = -1, countryCol = -1, firstNameCol = -1, lastNameCol = -1;
     
     for (var h = 0; h < headers.length; h++) {
       var hdr = String(headers[h] || '').toLowerCase().trim();
       if (hdr.indexOf('email') !== -1 && emailCol === -1) emailCol = h;
-      if ((hdr === 'name' || hdr === 'player name' || hdr === 'full name' || hdr.indexOf('name') !== -1) && nameCol === -1) nameCol = h;
+      if (hdr === 'first_name' || hdr === 'firstname') firstNameCol = h;
+      else if (hdr === 'last_name' || hdr === 'lastname') lastNameCol = h;
+      else if (hdr === 'name' && nameCol === -1) nameCol = h;
+      else if ((hdr === 'player name' || hdr === 'full name') && nameCol === -1) nameCol = h;
       if (hdr.indexOf('birthday') !== -1 || hdr.indexOf('birth date') !== -1 || hdr === 'dob' || hdr === 'date of birth') bdayCol = h;
       if (hdr.indexOf('country') !== -1 && countryCol === -1) countryCol = h;
     }
@@ -5870,7 +6210,14 @@ function getUpcomingBirthdays() {
       var daysUntil = Math.ceil((nextBday - today) / (1000 * 60 * 60 * 24));
       
       var email = emailCol >= 0 ? String(data[i][emailCol] || '').trim() : '';
-      var name = nameCol >= 0 ? String(data[i][nameCol] || '').trim() : email.split('@')[0];
+      var name = '';
+      if (nameCol >= 0) name = String(data[i][nameCol] || '').trim();
+      if (!name && (firstNameCol >= 0 || lastNameCol >= 0)) {
+        var fn = firstNameCol >= 0 ? String(data[i][firstNameCol] || '').trim() : '';
+        var ln = lastNameCol >= 0 ? String(data[i][lastNameCol] || '').trim() : '';
+        name = (fn + ' ' + ln).trim();
+      }
+      if (!name) name = email.split('@')[0];
       var country = countryCol >= 0 ? String(data[i][countryCol] || '').trim() : '';
       
       if (!email && !name) continue;
@@ -6630,7 +6977,7 @@ function getClosureEnrichment() {
     var result = { reasons: {}, manualData: {}, appUsers: [] };
     
     // 1. Read profiling closure reasons
-    var profSheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    var profSheet = _getProfilingSheet(ss);
     if (profSheet) {
       var profData = profSheet.getDataRange().getValues();
       if (profData.length > 1) {
@@ -6790,7 +7137,7 @@ function saveClosureReason(params) {
     
     if (!email) return { error: 'No email' };
     
-    var profSheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    var profSheet = _getProfilingSheet(ss);
     if (!profSheet) return { error: 'PROFILING sheet not found' };
     
     var profData = profSheet.getDataRange().getValues();
@@ -7354,7 +7701,7 @@ function saveUserEmoji(params) {
 function getProfilingCompletionByManager() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
-    var sheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+    var sheet = _getProfilingSheet(ss);
     if (!sheet) return { success: true, managers: {}, debug: 'PROFILING sheet not found' };
     
     // Load MANAGER mapping (tag-based)
@@ -7385,7 +7732,45 @@ function getProfilingCompletionByManager() {
     var skipCols = {};
     headersLower.forEach(function(h, i) {
       if (h === 'tags' || h === 'tag' || h === 'last_webhook_at' || h === '_last_webhook_at' || h === '' || h === 'photo' || h === 'id') skipCols[i] = true;
+      if (h.indexOf('upload') !== -1) skipCols[i] = true;
     });
+    
+    // ── Build the set of profile fields that COUNT toward completion ──
+    // Use admin overrides fieldOrder: {section: [keys...]}. Count fields in ALL
+    // sections EXCEPT "Non Visible fields". This mirrors the player card exactly,
+    // so system GD columns (cio_id, anonymous_id, ...) that admin parked in
+    // Non Visible fields won't drag the % down.
+    var countableSet = null; // null = count all non-skip columns (fallback)
+    try {
+      var ov = getProfilingFieldOverrides() || {};
+      var fo = ov.fieldOrder || {};
+      var secNames = Object.keys(fo);
+      if (secNames.length > 0) {
+        countableSet = {};
+        secNames.forEach(function(sec) {
+          if (String(sec).toLowerCase() === 'non visible fields') return; // hidden
+          (fo[sec] || []).forEach(function(k) {
+            countableSet[String(k).toLowerCase()] = true;
+          });
+        });
+      } else if (ov.fields && Object.keys(ov.fields).length > 0) {
+        // Fallback to fields map if fieldOrder missing
+        countableSet = {};
+        Object.keys(ov.fields).forEach(function(k) {
+          var f = ov.fields[k];
+          var sec = String((f && f.section) || '').toLowerCase();
+          if (sec === 'non visible fields') return;
+          countableSet[String(k).toLowerCase()] = true;
+        });
+      }
+    } catch (eOv) { Logger.log('Completion: failed to read overrides: ' + eOv); }
+    
+    // Apply: if we have a countable set, skip every column NOT in it
+    if (countableSet && Object.keys(countableSet).length > 0) {
+      headersLower.forEach(function(h, i) {
+        if (!countableSet[h]) skipCols[i] = true;
+      });
+    }
     
     // Load TYPE mapping for player type detection
     var typeMap = getTypeMapping();
@@ -8470,4 +8855,1453 @@ function sendWelcomeEmail(params) {
     );
     return { success: true };
   } catch(e) { return { error: e.message }; }
+}
+
+
+/* ============================================================
+ * PROFILING ADMIN PANEL — field config overrides storage
+ * ============================================================
+ * Stores override settings (label, type, options, section, preview,
+ * default value, etc.) in a hidden sheet `_PROFILING_FIELDS_CFG`.
+ *
+ * Storage format: cell A1 contains JSON:
+ *   {
+ *     fields: {
+ *       "<rawHeader>": {
+ *         label, type, options, section, preview, starred,
+ *         defaultValue, allowAdd, multiselect, subtype
+ *       }
+ *     },
+ *     sectionOrder: [ "General", "Main Info", ... ],
+ *     fieldOrder: { "General": ["email","name",...], ... },
+ *     sectionIcons: { "General": "📄", ... }
+ *   }
+ * ============================================================ */
+
+var PROFILING_CFG_SHEET = '_PROFILING_FIELDS_CFG';
+
+function _getOrCreateProfilingCfgSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(PROFILING_CFG_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PROFILING_CFG_SHEET);
+    sh.hideSheet();
+    sh.getRange(1, 1).setValue('{}');
+  }
+  return sh;
+}
+
+function getProfilingFieldOverrides() {
+  try {
+    var sh = _getOrCreateProfilingCfgSheet();
+    // Read all rows in column A — modern format is chunked, old format is single cell.
+    var lastRow = Math.max(1, sh.getLastRow());
+    var values = sh.getRange(1, 1, lastRow, 1).getValues();
+    var raw = '';
+    for (var i = 0; i < values.length; i++) {
+      var v = String(values[i][0] || '');
+      if (v) raw += v;
+    }
+    raw = raw.trim();
+    if (!raw) return { fields: {}, sectionOrder: [], fieldOrder: {}, sectionIcons: {} };
+    var obj = JSON.parse(raw);
+    obj.fields = obj.fields || {};
+    obj.sectionOrder = obj.sectionOrder || [];
+    obj.fieldOrder = obj.fieldOrder || {};
+    obj.sectionIcons = obj.sectionIcons || {};
+    return obj;
+  } catch (e) {
+    Logger.log('getProfilingFieldOverrides ERROR: ' + e);
+    return { fields: {}, sectionOrder: [], fieldOrder: {}, sectionIcons: {} };
+  }
+}
+
+function saveProfilingFieldOverrides(cfgObj) {
+  try {
+    if (!cfgObj || typeof cfgObj !== 'object') throw new Error('Invalid config');
+    cfgObj.fields = cfgObj.fields || {};
+    cfgObj.sectionOrder = cfgObj.sectionOrder || [];
+    cfgObj.fieldOrder = cfgObj.fieldOrder || {};
+    cfgObj.sectionIcons = cfgObj.sectionIcons || {};
+
+    var sh = _getOrCreateProfilingCfgSheet();
+    var json = JSON.stringify(cfgObj);
+    
+    // Split into 40000-char chunks (Google Sheets cell limit is 50000)
+    var CHUNK = 40000;
+    var chunks = [];
+    for (var i = 0; i < json.length; i += CHUNK) chunks.push([json.substring(i, i + CHUNK)]);
+    if (chunks.length === 0) chunks.push(['']);
+    
+    // Clear old content first (in case new payload is shorter than the old one)
+    var lastRow = Math.max(1, sh.getLastRow());
+    sh.getRange(1, 1, lastRow, 1).clearContent();
+    // Write chunks down column A
+    sh.getRange(1, 1, chunks.length, 1).setValues(chunks);
+    
+    Logger.log('saveProfilingFieldOverrides: ' + json.length + ' chars in ' + chunks.length + ' chunks');
+    return { success: true, size: json.length, chunks: chunks.length };
+  } catch (e) {
+    Logger.log('saveProfilingFieldOverrides ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Add a new column (field) to the PROFILING sheet.
+ * params: { fieldKey, label, section, type, options, preview, starred, defaultValue, subtype }
+ */
+function addProfilingColumn(params) {
+  try {
+    if (!params || !params.fieldKey) throw new Error('fieldKey required');
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) throw new Error('PROFILING sheet not found');
+
+    var headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+    // Make sure header is unique
+    var rawHeader = String(params.fieldKey).trim();
+    for (var i = 0; i < headerRow.length; i++) {
+      if (String(headerRow[i] || '').trim() === rawHeader) {
+        throw new Error('Field "' + rawHeader + '" already exists');
+      }
+    }
+
+    var lastCol = sheet.getLastColumn();
+    var newColIdx = lastCol + 1;
+    sheet.getRange(1, newColIdx).setValue(rawHeader);
+
+    // If dropdown type with options → set data validation
+    if (params.type === 'dropdown' && params.options && params.options.length > 0 && sheet.getLastRow() >= 2) {
+      try {
+        var rule = SpreadsheetApp.newDataValidation()
+          .requireValueInList(params.options, true)
+          .setAllowInvalid(params.allowAdd ? true : false)
+          .build();
+        sheet.getRange(2, newColIdx, sheet.getLastRow() - 1, 1).setDataValidation(rule);
+      } catch (dvErr) { Logger.log('DV err: ' + dvErr); }
+    } else if (params.type === 'checkbox' && sheet.getLastRow() >= 2) {
+      try {
+        sheet.getRange(2, newColIdx, sheet.getLastRow() - 1, 1).insertCheckboxes();
+      } catch (cbErr) { Logger.log('CB err: ' + cbErr); }
+    }
+
+    // Save to overrides
+    var cfg = getProfilingFieldOverrides();
+    cfg.fields[rawHeader] = {
+      label: params.label || rawHeader,
+      type: params.type || 'text',
+      section: params.section || 'General',
+      preview: !!params.preview,
+      starred: !!params.starred,
+      options: params.options || null,
+      defaultValue: params.defaultValue || '',
+      allowAdd: !!params.allowAdd,
+      multiselect: !!params.multiselect,
+      subtype: params.subtype || '',
+      platform: params.platform || '',
+      showNaToggle: !!params.showNaToggle,
+      prominentStyle: !!params.prominentStyle,
+      fullWidth: !!params.fullWidth
+    };
+    if (!cfg.fieldOrder[params.section || 'General']) cfg.fieldOrder[params.section || 'General'] = [];
+    cfg.fieldOrder[params.section || 'General'].push(rawHeader);
+    saveProfilingFieldOverrides(cfg);
+
+    return { success: true, columnIndex: newColIdx };
+  } catch (e) {
+    Logger.log('addProfilingColumn ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Delete a column from PROFILING sheet by header name.
+ */
+function deleteProfilingColumn(fieldKey) {
+  try {
+    if (!fieldKey) throw new Error('fieldKey required');
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) throw new Error('PROFILING sheet not found');
+
+    var headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var targetCol = -1;
+    for (var i = 0; i < headerRow.length; i++) {
+      if (String(headerRow[i] || '').trim() === String(fieldKey).trim()) {
+        targetCol = i + 1; break;
+      }
+    }
+    if (targetCol === -1) throw new Error('Column "' + fieldKey + '" not found');
+
+    sheet.deleteColumn(targetCol);
+
+    // Remove from overrides
+    var cfg = getProfilingFieldOverrides();
+    if (cfg.fields[fieldKey]) delete cfg.fields[fieldKey];
+    Object.keys(cfg.fieldOrder).forEach(function (s) {
+      cfg.fieldOrder[s] = (cfg.fieldOrder[s] || []).filter(function (k) { return k !== fieldKey; });
+    });
+    saveProfilingFieldOverrides(cfg);
+
+    return { success: true };
+  } catch (e) {
+    Logger.log('deleteProfilingColumn ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Rename a column header in PROFILING sheet.
+ */
+function renameProfilingColumn(oldKey, newKey) {
+  try {
+    if (!oldKey || !newKey) throw new Error('oldKey and newKey required');
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) throw new Error('PROFILING sheet not found');
+
+    var headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var targetCol = -1;
+    for (var i = 0; i < headerRow.length; i++) {
+      if (String(headerRow[i] || '').trim() === String(oldKey).trim()) {
+        targetCol = i + 1;
+      }
+      if (String(headerRow[i] || '').trim() === String(newKey).trim()) {
+        throw new Error('Column "' + newKey + '" already exists');
+      }
+    }
+    if (targetCol === -1) throw new Error('Column "' + oldKey + '" not found');
+
+    sheet.getRange(1, targetCol).setValue(newKey);
+
+    // Update overrides keys
+    var cfg = getProfilingFieldOverrides();
+    if (cfg.fields[oldKey]) {
+      cfg.fields[newKey] = cfg.fields[oldKey];
+      delete cfg.fields[oldKey];
+    }
+    Object.keys(cfg.fieldOrder).forEach(function (s) {
+      cfg.fieldOrder[s] = (cfg.fieldOrder[s] || []).map(function (k) {
+        return k === oldKey ? newKey : k;
+      });
+    });
+    saveProfilingFieldOverrides(cfg);
+
+    return { success: true };
+  } catch (e) {
+    Logger.log('renameProfilingColumn ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Apply data validation (dropdown) to a column.
+ */
+function applyProfilingValidation(fieldKey, options, allowAdd) {
+  try {
+    if (!fieldKey) throw new Error('fieldKey required');
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) throw new Error('PROFILING sheet not found');
+
+    var headerRow = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+    var targetCol = -1;
+    for (var i = 0; i < headerRow.length; i++) {
+      if (String(headerRow[i] || '').trim() === String(fieldKey).trim()) {
+        targetCol = i + 1; break;
+      }
+    }
+    if (targetCol === -1) throw new Error('Column "' + fieldKey + '" not found');
+    if (sheet.getLastRow() < 2) return { success: true, note: 'No data rows' };
+
+    var rng = sheet.getRange(2, targetCol, sheet.getLastRow() - 1, 1);
+
+    if (!options || options.length === 0) {
+      rng.clearDataValidations();
+    } else {
+      var rule = SpreadsheetApp.newDataValidation()
+        .requireValueInList(options, true)
+        .setAllowInvalid(allowAdd ? true : false)
+        .build();
+      rng.setDataValidation(rule);
+    }
+    return { success: true };
+  } catch (e) {
+    Logger.log('applyProfilingValidation ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Apply overrides to a fieldConfig object (in-place).
+ * Called from getPlayerProfilingData() after auto-detection.
+ */
+function _applyProfilingOverrides(fieldConfig) {
+  try {
+    var cfg = getProfilingFieldOverrides();
+    if (!cfg || !cfg.fields) return;
+
+    // Apply per-field overrides
+    Object.keys(cfg.fields).forEach(function (key) {
+      if (!fieldConfig[key]) return; // field not present in sheet anymore
+      var ov = cfg.fields[key];
+      if (ov.label !== undefined && ov.label !== null) fieldConfig[key].label = ov.label;
+      if (ov.type !== undefined && ov.type !== null && ov.type !== '') fieldConfig[key].type = ov.type;
+      if (ov.options !== undefined && ov.options !== null) fieldConfig[key].options = ov.options;
+      if (ov.section !== undefined && ov.section !== null && ov.section !== '') fieldConfig[key].section = ov.section;
+      if (ov.preview !== undefined) fieldConfig[key].preview = !!ov.preview;
+      if (ov.starred !== undefined) fieldConfig[key].starred = !!ov.starred;
+      if (ov.defaultValue !== undefined) fieldConfig[key].defaultValue = ov.defaultValue;
+      if (ov.allowAdd !== undefined) fieldConfig[key].allowAdd = !!ov.allowAdd;
+      if (ov.multiselect !== undefined) fieldConfig[key].multiselect = !!ov.multiselect;
+      if (ov.subtype !== undefined) fieldConfig[key].subtype = ov.subtype;
+      if (ov.platform !== undefined) fieldConfig[key].platform = ov.platform;
+      if (ov.iconClass !== undefined) fieldConfig[key].iconClass = ov.iconClass;
+      if (ov.showNaToggle !== undefined) fieldConfig[key].showNaToggle = !!ov.showNaToggle;
+      if (ov.prominentStyle !== undefined) fieldConfig[key].prominentStyle = !!ov.prominentStyle;
+      if (ov.fullWidth !== undefined) fieldConfig[key].fullWidth = !!ov.fullWidth;
+    });
+
+    // Rebuild _sections from possibly updated section assignments
+    var newSections = {};
+    var order = fieldConfig._order || [];
+    order.forEach(function (k) {
+      var f = fieldConfig[k];
+      if (!f) return;
+      var s = f.section || 'General';
+      if (!newSections[s]) newSections[s] = [];
+      newSections[s].push(k);
+    });
+    fieldConfig._sections = newSections;
+
+    // Apply section order from overrides
+    if (cfg.sectionOrder && cfg.sectionOrder.length) {
+      var ordered = {};
+      cfg.sectionOrder.forEach(function (s) { if (newSections[s]) ordered[s] = newSections[s]; });
+      Object.keys(newSections).forEach(function (s) { if (!ordered[s]) ordered[s] = newSections[s]; });
+      fieldConfig._sections = ordered;
+    }
+
+    // Apply field order within each section
+    if (cfg.fieldOrder) {
+      Object.keys(cfg.fieldOrder).forEach(function (s) {
+        if (fieldConfig._sections[s]) {
+          var saved = cfg.fieldOrder[s] || [];
+          var existing = fieldConfig._sections[s];
+          var sorted = saved.filter(function (k) { return existing.indexOf(k) !== -1; });
+          existing.forEach(function (k) { if (sorted.indexOf(k) === -1) sorted.push(k); });
+          fieldConfig._sections[s] = sorted;
+        }
+      });
+    }
+
+    // Section icons
+    if (cfg.sectionIcons) {
+      fieldConfig._sectionIcons = cfg.sectionIcons;
+    }
+    
+    // Layout designer overrides (per-section field widths + order)
+    if (cfg.layouts) {
+      fieldConfig._layouts = cfg.layouts;
+    }
+  } catch (e) {
+    Logger.log('_applyProfilingOverrides ERROR: ' + e);
+  }
+}
+
+
+/**
+ * BATCH apply data validations for many fields at once.
+ * Avoids one-round-trip-per-field overhead.
+ *
+ * @param {Object} map - { fieldKey: { options: [...], allowAdd: bool } }
+ */
+function applyProfilingValidationsBatch(map) {
+  try {
+    if (!map || typeof map !== 'object') return { success: true };
+    var keys = Object.keys(map);
+    if (keys.length === 0) return { success: true };
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) return { success: false, error: 'PROFILING not found' };
+
+    var lastRow = sheet.getLastRow();
+    if (lastRow < 2) return { success: true };
+
+    var lastCol = sheet.getLastColumn();
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+
+    // Build map of header -> column index
+    var hdrIdx = {};
+    for (var h = 0; h < headers.length; h++) {
+      hdrIdx[String(headers[h] || '').trim()] = h + 1;
+    }
+
+    var applied = 0;
+    for (var i = 0; i < keys.length; i++) {
+      var fk = keys[i];
+      var col = hdrIdx[fk];
+      if (!col) continue;
+
+      var item = map[fk] || {};
+      var rng = sheet.getRange(2, col, lastRow - 1, 1);
+
+      if (!item.options || !item.options.length) {
+        rng.clearDataValidations();
+      } else {
+        var rule = SpreadsheetApp.newDataValidation()
+          .requireValueInList(item.options, true)
+          .setAllowInvalid(item.allowAdd ? true : false)
+          .build();
+        rng.setDataValidation(rule);
+      }
+      applied++;
+    }
+    return { success: true, applied: applied };
+  } catch (e) {
+    Logger.log('applyProfilingValidationsBatch ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Fill in default values for empty cells in PROFILING for given fields.
+ * Writes ONLY to the specific empty cells (per-column batch) — does not touch
+ * any other columns, so unrelated data validations cannot interfere.
+ *
+ * @param {Object} defaults - { fieldKey: defaultValue }
+ */
+function applyProfilingDefaults(defaults) {
+  try {
+    if (!defaults || typeof defaults !== 'object') return { success: true, updated: 0 };
+    var keys = Object.keys(defaults);
+    if (keys.length === 0) return { success: true, updated: 0 };
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) return { success: false, error: 'PROFILING not found' };
+
+    var lastRow = sheet.getLastRow();
+    var lastCol = sheet.getLastColumn();
+    if (lastRow < 2) return { success: true, updated: 0 };
+
+    var headers = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+    var hdrIdx = {};
+    for (var h = 0; h < headers.length; h++) {
+      hdrIdx[String(headers[h] || '').trim()] = h + 1; // 1-based
+    }
+
+    var totalUpdated = 0;
+    var skipped = [];   // { fieldKey, reason }
+
+    for (var k = 0; k < keys.length; k++) {
+      var fk = keys[k];
+      var def = defaults[fk];
+      if (def === undefined || def === null || String(def).trim() === '') continue;
+      var col = hdrIdx[fk];
+      if (!col) { skipped.push({ fieldKey: fk, reason: 'column not found' }); continue; }
+
+      // Read ONLY this column
+      var colVals = sheet.getRange(2, col, lastRow - 1, 1).getValues();
+
+      // Check if this column has data validation that would reject the default
+      var skipColumn = false;
+      try {
+        var dv = sheet.getRange(2, col).getDataValidation();
+        if (dv && dv.getCriteriaType() === SpreadsheetApp.DataValidationCriteria.VALUE_IN_LIST) {
+          var args = dv.getCriteriaValues();
+          if (args && args[0] && Array.isArray(args[0])) {
+            var allowed = args[0].map(function(v) { return String(v); });
+            if (allowed.indexOf(String(def)) === -1) {
+              // Default value is not in the dropdown list → skip, otherwise per-cell setValue will throw
+              skipped.push({ fieldKey: fk, reason: 'default "' + def + '" is not in dropdown options [' + allowed.join(', ') + ']' });
+              skipColumn = true;
+            }
+          }
+        }
+      } catch (dvErr) { /* ignore — proceed */ }
+
+      if (skipColumn) continue;
+
+      // Walk the column and write to ONLY empty cells, one by one (safe: triggers validation
+      // only for the cell we touch, leaves other columns untouched).
+      for (var r = 0; r < colVals.length; r++) {
+        var v = colVals[r][0];
+        if (v === null || v === undefined || String(v).trim() === '') {
+          try {
+            sheet.getRange(r + 2, col).setValue(def);
+            totalUpdated++;
+          } catch (cellErr) {
+            // Validation rejected this cell → skip it but keep going for others
+            Logger.log('applyProfilingDefaults: cell ' + (r + 2) + 'x' + col + ' rejected: ' + cellErr);
+          }
+        }
+      }
+    }
+
+    return { success: true, updated: totalUpdated, skipped: skipped };
+  } catch (e) {
+    Logger.log('applyProfilingDefaults ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+
+/* ============================================================
+ * PROFILING BANNERS (running marquee bars on player cards)
+ * ============================================================
+ * Stored in hidden sheet `_PROFILING_BANNERS_CFG` (cell A1 JSON).
+ *
+ * Rule schema:
+ *   {
+ *     id: "b_xxx",
+ *     enabled: true,
+ *     name: "Gambling problems",      // admin-only label
+ *     message: "ATTENTION! ...",      // displayed text
+ *     color: "#ef4444",
+ *     icon: "⚠️",
+ *     priority: 0,                    // lower = checked first
+ *     matchAll: false,                // true=AND, false=OR
+ *     conditions: [
+ *       { type: 'tag', values: ['vip', 'pg'] },          // OR within the list
+ *       { type: 'notag', values: [...] },
+ *       { type: 'playerType', values: ['VIP','SILENT VIP'] },
+ *       { type: 'fieldEmpty', fieldKey: '<key>' },
+ *       { type: 'fieldNotEmpty', fieldKey: '<key>' },
+ *       { type: 'fieldEquals', fieldKey: '<key>', value: 'X' },
+ *       { type: 'fieldNotEquals', fieldKey: '<key>', value: 'X' }
+ *     ]
+ *   }
+ * ============================================================ */
+
+var PROFILING_BANNERS_SHEET = '_PROFILING_BANNERS_CFG';
+
+function _getOrCreateProfilingBannersSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(PROFILING_BANNERS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PROFILING_BANNERS_SHEET);
+    sh.hideSheet();
+    sh.getRange(1, 1).setValue('[]');
+  }
+  return sh;
+}
+
+function getProfilingBanners() {
+  try {
+    var sh = _getOrCreateProfilingBannersSheet();
+    var raw = String(sh.getRange(1, 1).getValue() || '').trim();
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    if (!Array.isArray(arr)) return [];
+    return arr;
+  } catch (e) {
+    Logger.log('getProfilingBanners ERROR: ' + e);
+    return [];
+  }
+}
+
+function saveProfilingBanners(banners) {
+  try {
+    if (!Array.isArray(banners)) throw new Error('Expected an array');
+    // Normalize / sanity-check
+    var clean = banners.map(function (b, i) {
+      return {
+        id: b.id || ('b_' + Date.now() + '_' + i),
+        enabled: b.enabled !== false,
+        name: String(b.name || '').slice(0, 200),
+        message: String(b.message || '').slice(0, 500),
+        color: String(b.color || '#ef4444').slice(0, 32),
+        icon: String(b.icon || '\u26A0\uFE0F').slice(0, 8),
+        priority: Number(b.priority) || 0,
+        matchAll: !!b.matchAll,
+        conditions: Array.isArray(b.conditions) ? b.conditions : []
+      };
+    });
+    var sh = _getOrCreateProfilingBannersSheet();
+    sh.getRange(1, 1).setValue(JSON.stringify(clean));
+    return { success: true, count: clean.length };
+  } catch (e) {
+    Logger.log('saveProfilingBanners ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+
+/**
+ * Import legacy ATTENTION sheet rules + hardcoded NEWCOMER logic into the new
+ * admin-managed banners config. Idempotent — won't duplicate rules already imported.
+ */
+function importLegacyAttentionToBanners() {
+  try {
+    var existing = getProfilingBanners();
+    var existingIds = {};
+    existing.forEach(function (b) { if (b && b.id) existingIds[b.id] = true; });
+
+    var added = 0;
+
+    // Import from ATTENTION sheet — tag-based rules only
+    var attentionRules = [];
+    try { attentionRules = getAttentionRules() || []; } catch (e) {}
+    attentionRules.forEach(function (rule) {
+      var safeName = String(rule.error || 'rule').replace(/[^a-zA-Z0-9_]/g, '_').toLowerCase();
+      var id = 'b_imported_' + safeName;
+      if (existingIds[id]) return;
+
+      existing.push({
+        id: id,
+        enabled: true,
+        name: rule.error || 'Imported rule',
+        message: rule.message || rule.error || '',
+        color: rule.color || '#ef4444',
+        icon: '\u26A0\uFE0F',
+        priority: 0,
+        matchAll: false,
+        conditions: (rule.tags && rule.tags.length)
+          ? [{ type: 'tag', values: rule.tags.slice() }]
+          : []
+      });
+      added++;
+    });
+
+    if (added > 0) saveProfilingBanners(existing);
+
+    return { success: true, added: added, total: existing.length, banners: existing };
+  } catch (e) {
+    Logger.log('importLegacyAttentionToBanners ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Remove the auto-imported NEWCOMER banner if it exists. Safe to call multiple times.
+ * The hardcoded isNewcomer() logic in App.html still handles the green NEWCOMER stripe
+ * separately — no banner needed for it.
+ */
+function removeAutoNewcomerBanner() {
+  try {
+    var banners = getProfilingBanners();
+    var filtered = banners.filter(function (b) { return b && b.id !== 'b_newcomer'; });
+    if (filtered.length !== banners.length) {
+      saveProfilingBanners(filtered);
+      return { success: true, removed: true, banners: filtered };
+    }
+    return { success: true, removed: false, banners: banners };
+  } catch (e) {
+    Logger.log('removeAutoNewcomerBanner ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Find the JIRA field key in PROFILING using multiple strategies.
+ * Returns '' if not found.
+ */
+function _findJiraFieldKey_() {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = _getProfilingSheet(ss);
+    if (!sheet) return '';
+    var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
+
+    // Strategy 1: header contains both [BICON] and 'jira'
+    for (var i = 0; i < headers.length; i++) {
+      var hl = String(headers[i] || '').toLowerCase();
+      if (hl.indexOf('[bicon]') !== -1 && hl.indexOf('jira') !== -1) return String(headers[i]).trim();
+    }
+
+    // Strategy 2: any header containing 'jira'
+    for (var i2 = 0; i2 < headers.length; i2++) {
+      var hl2 = String(headers[i2] || '').toLowerCase();
+      if (hl2.indexOf('jira') !== -1) return String(headers[i2]).trim();
+    }
+
+    // Strategy 3: overrides config — platform = 'JIRA'
+    try {
+      var cfg = getProfilingFieldOverrides();
+      if (cfg && cfg.fields) {
+        for (var k in cfg.fields) {
+          var f = cfg.fields[k];
+          if (f && f.platform && String(f.platform).toLowerCase() === 'jira') return k;
+        }
+      }
+    } catch (e) {}
+
+    return '';
+  } catch (e) {
+    Logger.log('_findJiraFieldKey_ ERROR: ' + e);
+    return '';
+  }
+}
+
+
+/* ============================================================
+ * PROFILING TYPE TABS — ALL / New / CHURN / PRE-VIP / VIP
+ * ============================================================
+ * Stored in hidden sheet `_PROFILING_TYPE_TABS_CFG` (cell A1 JSON).
+ *
+ * Tab schema:
+ *   {
+ *     id: "t_xxx",
+ *     enabled: true,
+ *     name: "New",
+ *     icon: "🆕",
+ *     color: "#10b981",
+ *     matchAll: true,
+ *     conditions: [ ... same shape as banners ... ],
+ *     isAll: false,        // true → match ALL players (no filter)
+ *     showCount: true,     // show count badge in tab
+ *     showBanner: false,   // also paint a banner on matching cards
+ *     bannerMessage: ""    // banner text if showBanner=true
+ *   }
+ * ============================================================ */
+
+var PROFILING_TYPE_TABS_SHEET = '_PROFILING_TYPE_TABS_CFG';
+
+function _getOrCreateTypeTabsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(PROFILING_TYPE_TABS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PROFILING_TYPE_TABS_SHEET);
+    sh.hideSheet();
+    sh.getRange(1, 1).setValue('[]');
+  }
+  return sh;
+}
+
+function getProfilingTypeTabs() {
+  try {
+    var sh = _getOrCreateTypeTabsSheet();
+    var raw = String(sh.getRange(1, 1).getValue() || '').trim();
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    Logger.log('getProfilingTypeTabs ERROR: ' + e);
+    return [];
+  }
+}
+
+function saveProfilingTypeTabs(tabs) {
+  try {
+    if (!Array.isArray(tabs)) throw new Error('Expected an array');
+    var clean = tabs.map(function (t, i) {
+      return {
+        id: t.id || ('t_' + Date.now() + '_' + i),
+        enabled: t.enabled !== false,
+        name: String(t.name || '').slice(0, 100),
+        icon: String(t.icon || '').slice(0, 8),
+        color: String(t.color || '#667eea').slice(0, 32),
+        parentId: String(t.parentId || '').slice(0, 64),
+        matchAll: !!t.matchAll,
+        conditions: Array.isArray(t.conditions) ? t.conditions : [],
+        isAll: !!t.isAll,
+        showCount: t.showCount !== false,
+        showBanner: !!t.showBanner,
+        bannerMessage: String(t.bannerMessage || '').slice(0, 500),
+        order: Number(t.order) || i
+      };
+    });
+    var sh = _getOrCreateTypeTabsSheet();
+    sh.getRange(1, 1).setValue(JSON.stringify(clean));
+    return { success: true, count: clean.length };
+  } catch (e) {
+    Logger.log('saveProfilingTypeTabs ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Seed default Type Tabs (ALL/New/CHURN/PRE-VIP/VIP) if config is empty.
+ * Idempotent — only seeds when storage is fresh.
+ */
+function seedDefaultTypeTabs() {
+  try {
+    var existing = getProfilingTypeTabs();
+    if (existing.length > 0) return { success: true, seeded: false, count: existing.length };
+
+    var jiraKey = '';
+    try { jiraKey = _findJiraFieldKey_(); } catch(e) {}
+
+    var defaults = [
+      {
+        id: 't_all', enabled: true, name: 'ALL', icon: '', color: '#667eea',
+        isAll: true, matchAll: false, conditions: [], showCount: true,
+        showBanner: false, bannerMessage: '', order: 0
+      },
+      {
+        id: 't_new', enabled: true, name: 'New', icon: '\uD83C\uDD95', color: '#10b981',
+        isAll: false, matchAll: true,
+        conditions: [
+          { type: 'playerType', values: ['VIP', 'SILENT VIP'] },
+          { type: 'fieldEmpty', fieldKey: jiraKey || '' }
+        ],
+        showCount: true, showBanner: false,
+        bannerMessage: 'NEWCOMER \u2014 NO JIRA LINK',
+        order: 1
+      },
+      {
+        id: 't_churn', enabled: true, name: 'CHURN', icon: '', color: '#ef4444',
+        isAll: false, matchAll: false,
+        conditions: [{ type: 'playerType', values: ['CHURNED VIP'] }],
+        showCount: true, showBanner: false, bannerMessage: '', order: 2
+      },
+      {
+        id: 't_previp', enabled: true, name: 'PRE-VIP', icon: '', color: '#84cc16',
+        isAll: false, matchAll: false,
+        conditions: [{ type: 'playerType', values: ['PRE VIP'] }],
+        showCount: true, showBanner: false, bannerMessage: '', order: 3
+      },
+      {
+        id: 't_vip', enabled: true, name: 'VIP', icon: '', color: '#f59e0b',
+        isAll: false, matchAll: false,
+        conditions: [{ type: 'playerType', values: ['VIP', 'SILENT VIP'] }],
+        showCount: true, showBanner: false, bannerMessage: '', order: 4
+      }
+    ];
+    saveProfilingTypeTabs(defaults);
+    return { success: true, seeded: true, count: defaults.length, tabs: defaults };
+  } catch (e) {
+    Logger.log('seedDefaultTypeTabs ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+
+/* ============================================================
+ * PROFILING GLOBAL SETTINGS
+ * ============================================================
+ * Stored in `_PROFILING_SETTINGS_CFG` sheet (A1 = JSON object).
+ * { backofficeUrl, completionHigh, completionMed }
+ * ============================================================ */
+
+var PROFILING_SETTINGS_SHEET = '_PROFILING_SETTINGS_CFG';
+
+function _getOrCreateProfilingSettingsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(PROFILING_SETTINGS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PROFILING_SETTINGS_SHEET);
+    sh.hideSheet();
+    sh.getRange(1, 1).setValue('{}');
+  }
+  return sh;
+}
+
+function getProfilingSettings() {
+  try {
+    var sh = _getOrCreateProfilingSettingsSheet();
+    var raw = String(sh.getRange(1, 1).getValue() || '').trim();
+    if (!raw) return {};
+    var obj = JSON.parse(raw);
+    return (typeof obj === 'object' && obj) ? obj : {};
+  } catch (e) {
+    Logger.log('getProfilingSettings ERROR: ' + e);
+    return {};
+  }
+}
+
+function saveProfilingSettings(settings) {
+  try {
+    if (!settings || typeof settings !== 'object') throw new Error('Expected an object');
+    var density = String(settings.cardDensity || 'normal').toLowerCase();
+    if (['compact','normal','comfortable'].indexOf(density) === -1) density = 'normal';
+
+    var sortFields = [];
+    if (Array.isArray(settings.sortDateFields)) {
+      sortFields = settings.sortDateFields.slice(0, 3).map(function(it) {
+        return {
+          label: String((it && it.label) || '').slice(0, 100),
+          fieldKey: String((it && it.fieldKey) || '').slice(0, 100)
+        };
+      }).filter(function(it){ return it.fieldKey; });
+    }
+
+    var clean = {
+      backofficeUrl:   String(settings.backofficeUrl   || '').slice(0, 500),
+      completionHigh:  Number(settings.completionHigh) || 80,
+      completionMed:   Number(settings.completionMed)  || 50,
+      cardDensity:     density,
+      sortDateFields:  sortFields
+    };
+    if (clean.completionHigh < 0 || clean.completionHigh > 100) clean.completionHigh = 80;
+    if (clean.completionMed  < 0 || clean.completionMed  > 100) clean.completionMed  = 50;
+    if (clean.completionMed >= clean.completionHigh) clean.completionMed = Math.max(0, clean.completionHigh - 10);
+
+    var sh = _getOrCreateProfilingSettingsSheet();
+    sh.getRange(1, 1).setValue(JSON.stringify(clean));
+    return { success: true, settings: clean };
+  } catch (e) {
+    Logger.log('saveProfilingSettings ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+
+/* ============================================================
+ * PROFILING MANAGER TABS
+ * ============================================================
+ * Stored in `_PROFILING_MANAGER_TABS_CFG` sheet (cell A1 JSON).
+ *
+ * Tab schema:
+ *   {
+ *     id: "mt_xxx",
+ *     enabled: true,
+ *     name: "Ann",
+ *     icon: "",
+ *     color: "#667eea",
+ *     order: 0,
+ *     // Source: bound to MANAGERS sheet entry, OR custom conditions
+ *     managerName: "Ann",   // non-empty → use managerMapping tags
+ *     matchAll: false,
+ *     conditions: []        // used if managerName is empty (custom virtual manager)
+ *   }
+ * ============================================================ */
+
+var PROFILING_MGR_TABS_SHEET = '_PROFILING_MANAGER_TABS_CFG';
+
+function _getOrCreateMgrTabsSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName(PROFILING_MGR_TABS_SHEET);
+  if (!sh) {
+    sh = ss.insertSheet(PROFILING_MGR_TABS_SHEET);
+    sh.hideSheet();
+    sh.getRange(1, 1).setValue('[]');
+  }
+  return sh;
+}
+
+function getProfilingManagerTabs() {
+  try {
+    var sh = _getOrCreateMgrTabsSheet();
+    var raw = String(sh.getRange(1, 1).getValue() || '').trim();
+    if (!raw) return [];
+    var arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch (e) {
+    Logger.log('getProfilingManagerTabs ERROR: ' + e);
+    return [];
+  }
+}
+
+function saveProfilingManagerTabs(tabs) {
+  try {
+    if (!Array.isArray(tabs)) throw new Error('Expected an array');
+    var clean = tabs.map(function (t, i) {
+      return {
+        id:           t.id || ('mt_' + Date.now() + '_' + i),
+        enabled:      t.enabled !== false,
+        name:         String(t.name || '').slice(0, 100),
+        icon:         String(t.icon || '').slice(0, 8),
+        color:        String(t.color || '#667eea').slice(0, 32),
+        order:        Number(t.order) || i,
+        managerName:  String(t.managerName || '').slice(0, 100),
+        matchAll:     !!t.matchAll,
+        conditions:   Array.isArray(t.conditions) ? t.conditions : []
+      };
+    });
+    var sh = _getOrCreateMgrTabsSheet();
+    sh.getRange(1, 1).setValue(JSON.stringify(clean));
+    return { success: true, count: clean.length };
+  } catch (e) {
+    Logger.log('saveProfilingManagerTabs ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+/**
+ * Seed default Manager Tabs from current MANAGERS sheet (one tab per manager).
+ * Idempotent — only seeds when storage is fresh.
+ */
+function seedDefaultManagerTabs() {
+  try {
+    var existing = getProfilingManagerTabs();
+    if (existing.length > 0) return { success: true, seeded: false, count: existing.length };
+
+    // Pull manager names — try the same source the client uses.
+    var mgrMapping = {};
+    try { mgrMapping = (getManagerMapping() || {}).managerMapping || {}; } catch(e) {}
+    var names = Object.keys(mgrMapping).sort();
+    var palette = ['#667eea','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16','#3b82f6','#a855f7'];
+
+    var defaults = names.map(function(n, i) {
+      return {
+        id: 'mt_' + Date.now() + '_' + i,
+        enabled: true,
+        name: n,
+        icon: '',
+        color: palette[i % palette.length],
+        order: i,
+        managerName: n,
+        matchAll: false,
+        conditions: []
+      };
+    });
+    if (defaults.length === 0) return { success: true, seeded: false, count: 0 };
+    saveProfilingManagerTabs(defaults);
+    return { success: true, seeded: true, count: defaults.length, tabs: defaults };
+  } catch (e) {
+    Logger.log('seedDefaultManagerTabs ERROR: ' + e);
+    return { success: false, error: e.message };
+  }
+}
+
+
+/**
+ * Send a notification payload to a webhook URL (e.g. Customer.io).
+ * Frontend calls this since browser CORS blocks direct webhook POSTs from
+ * the Apps Script web-app domain. UrlFetchApp has no CORS restriction.
+ *
+ * @param {string} url      The webhook endpoint
+ * @param {object} payload  JSON payload to send
+ * @return {{success: boolean, status?: number, response?: string, error?: string}}
+ */
+function sendNotificationWebhook(url, payload) {
+  try {
+    if (!url || typeof url !== 'string') return { success: false, error: 'No webhook URL' };
+    if (!payload || typeof payload !== 'object') return { success: false, error: 'No payload' };
+    var response = UrlFetchApp.fetch(url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true,
+      followRedirects: true
+    });
+    var status = response.getResponseCode();
+    var text = response.getContentText();
+    Logger.log('Notification webhook → ' + url + ' | status=' + status + ' | resp=' + text);
+    if (status >= 200 && status < 300) {
+      return { success: true, status: status, response: text };
+    } else {
+      return { success: false, status: status, error: 'HTTP ' + status + ': ' + text.substring(0, 200) };
+    }
+  } catch (e) {
+    Logger.log('sendNotificationWebhook ERROR: ' + e);
+    return { success: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+
+// ━━━ Notification Pages config (admin-editable list of CTA quick-pages) ━━━
+// Stored in DocumentProperties as a single JSON string under key NOTIF_PAGES.
+// Simple, no extra sheet required.
+
+function getNotifPages() {
+  try {
+    var raw = PropertiesService.getDocumentProperties().getProperty('NOTIF_PAGES');
+    if (!raw) return { pages: [] };
+    var parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return { pages: [] };
+    // Normalize entries
+    var clean = parsed.filter(function(p){ return p && (p.label || p.path); })
+                      .map(function(p){
+                        return {
+                          icon: String(p.icon || '').trim(),
+                          label: String(p.label || '').trim(),
+                          path: String(p.path || '').trim()
+                        };
+                      });
+    return { pages: clean };
+  } catch (e) {
+    Logger.log('getNotifPages ERROR: ' + e);
+    return { pages: [], error: String(e) };
+  }
+}
+
+function saveNotifPages(pages) {
+  try {
+    if (!Array.isArray(pages)) throw new Error('pages must be an array');
+    var clean = pages.filter(function(p){ return p && (p.label || p.path); })
+                     .map(function(p){
+                       return {
+                         icon: String(p.icon || '').trim(),
+                         label: String(p.label || '').trim(),
+                         path: String(p.path || '').trim()
+                       };
+                     });
+    PropertiesService.getDocumentProperties().setProperty('NOTIF_PAGES', JSON.stringify(clean));
+    Logger.log('saveNotifPages: stored ' + clean.length + ' page(s)');
+    return { success: true, count: clean.length };
+  } catch (e) {
+    Logger.log('saveNotifPages ERROR: ' + e);
+    return { success: false, error: String(e && e.message ? e.message : e) };
+  }
+}
+
+
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  ONE-TIME MIGRATION: PROFILING → GENERAL DASHBOARD
+//  Run these from the Apps Script editor in order:
+//    1) migrationAudit()        - readonly, shows what will happen
+//    2) migrationDryRun()       - readonly, shows actual values that will copy
+//    3) migrationRun()          - DOES the migration (with backup)
+//    4) migrationFinalize()     - switches app to read/write from GD
+//  Rollback: migrationRollback() restores PROFILING from backup
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Columns to migrate from PROFILING into GENERAL DASHBOARD (your 29 manual fields)
+var MIGRATION_MANUAL_COLUMNS = [
+  'Nationality', 'Closure reason', 'Intercom Link', 'Device', 'First game session',
+  'Volatility', 'GAME PREFERENCE', 'Game Style', 'Game theme', 'Spent in time',
+  'Other casinos', 'Main conditions on other casinos', 'Religion', 'Sexual identity',
+  'Sex', 'Hobbies', 'Alcohol', 'Allergies', 'Humour', 'Language', 'Comments',
+  'Whatsapp Link', 'Telegram Link', 'Signal Link', 'Messenger Link', 'Facebook Link',
+  'Instagram Link', 'Viber', 'We Chat', 'JIRA Link', 'VIP Confirmation Date'
+];
+
+function _migGetSheets() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var profSheet = ss.getSheetByName('PROFILING') || ss.getSheetByName('[PROFILING]');
+  var gdSheet = ss.getSheetByName('GENERAL DASHBOARD') || ss.getSheetByName('[GENERAL DASHBOARD]') || ss.getSheetByName('General Dashboard');
+  if (!profSheet) throw new Error('PROFILING sheet not found');
+  if (!gdSheet) throw new Error('GENERAL DASHBOARD sheet not found');
+  return { ss: ss, profSheet: profSheet, gdSheet: gdSheet };
+}
+
+function _migFindIdCol(headers) {
+  for (var i = 0; i < headers.length; i++) {
+    var h = String(headers[i] || '').toLowerCase().trim();
+    if (h === 'id' || h === 'player id' || h === 'player_id' || h === 'slotornado_id') return i;
+  }
+  return -1;
+}
+
+/**
+ * STEP 1 — READONLY AUDIT.
+ * Shows player counts, id match stats, column conflicts.
+ * Run from Apps Script editor → View → Logs.
+ */
+function migrationAudit() {
+  var s = _migGetSheets();
+  var profData = s.profSheet.getDataRange().getValues();
+  var gdData = s.gdSheet.getDataRange().getValues();
+  
+  Logger.log('═══ MIGRATION AUDIT ═══');
+  Logger.log('PROFILING rows: ' + (profData.length - 1));
+  Logger.log('GD rows: ' + (gdData.length - 1));
+  
+  var profHeaders = profData[0].map(function(h){ return String(h || '').trim(); });
+  var gdHeaders = gdData[0].map(function(h){ return String(h || '').trim(); });
+  var profIdCol = _migFindIdCol(profHeaders);
+  var gdIdCol = _migFindIdCol(gdHeaders);
+  
+  Logger.log('PROFILING id column: ' + (profIdCol === -1 ? '❌ NOT FOUND' : profHeaders[profIdCol] + ' (col ' + (profIdCol + 1) + ')'));
+  Logger.log('GD id column:        ' + (gdIdCol === -1 ? '❌ NOT FOUND' : gdHeaders[gdIdCol] + ' (col ' + (gdIdCol + 1) + ')'));
+  if (profIdCol === -1 || gdIdCol === -1) { Logger.log('❌ ABORT — id column missing'); return; }
+  
+  // Build GD id map
+  var gdIds = {};
+  for (var i = 1; i < gdData.length; i++) {
+    var id = String(gdData[i][gdIdCol] || '').trim();
+    if (id) gdIds[id] = i;
+  }
+  
+  // Match check
+  var matched = 0, unmatched = [];
+  for (var p = 1; p < profData.length; p++) {
+    var pid = String(profData[p][profIdCol] || '').trim();
+    if (!pid) continue;
+    if (gdIds[pid]) matched++;
+    else unmatched.push(pid + ' (row ' + (p + 1) + ')');
+  }
+  Logger.log('');
+  Logger.log('✅ Matched by id: ' + matched);
+  Logger.log('❌ Unmatched: ' + unmatched.length);
+  if (unmatched.length > 0 && unmatched.length <= 20) {
+    Logger.log('   ' + unmatched.join(', '));
+  } else if (unmatched.length > 20) {
+    Logger.log('   First 20: ' + unmatched.slice(0, 20).join(', '));
+  }
+  
+  // Column conflicts
+  Logger.log('');
+  Logger.log('═══ COLUMN CHECK ═══');
+  var gdHeadersLower = gdHeaders.map(function(h){ return h.toLowerCase(); });
+  var toAdd = [], conflicts = [], missingInProf = [];
+  MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+    var colLower = col.toLowerCase();
+    var inProf = profHeaders.some(function(h){ return h.toLowerCase() === colLower; });
+    var inGd = gdHeadersLower.indexOf(colLower) !== -1;
+    if (!inProf) {
+      missingInProf.push(col);
+    } else if (inGd) {
+      conflicts.push(col);
+    } else {
+      toAdd.push(col);
+    }
+  });
+  
+  Logger.log('Columns to ADD to GD (' + toAdd.length + '):');
+  toAdd.forEach(function(c){ Logger.log('  + ' + c); });
+  
+  if (conflicts.length > 0) {
+    Logger.log('');
+    Logger.log('⚠️ Columns already exist in GD (' + conflicts.length + ') — values will be OVERWRITTEN:');
+    conflicts.forEach(function(c){ Logger.log('  ⚠ ' + c); });
+  }
+  
+  if (missingInProf.length > 0) {
+    Logger.log('');
+    Logger.log('⚠️ Columns listed in MIGRATION_MANUAL_COLUMNS but NOT in PROFILING (' + missingInProf.length + ') — will be skipped:');
+    missingInProf.forEach(function(c){ Logger.log('  ⚠ ' + c); });
+  }
+  
+  Logger.log('');
+  Logger.log('═══ DONE ═══');
+  Logger.log('If all looks good → run migrationDryRun() next.');
+}
+
+/**
+ * STEP 2 — READONLY DRY RUN.
+ * Shows actual VALUES that would be copied for first 3 players. No writes.
+ */
+function migrationDryRun() {
+  var s = _migGetSheets();
+  var profData = s.profSheet.getDataRange().getValues();
+  var gdData = s.gdSheet.getDataRange().getValues();
+  var profHeaders = profData[0].map(function(h){ return String(h || '').trim(); });
+  var gdHeaders = gdData[0].map(function(h){ return String(h || '').trim(); });
+  var profIdCol = _migFindIdCol(profHeaders);
+  var gdIdCol = _migFindIdCol(gdHeaders);
+  if (profIdCol === -1 || gdIdCol === -1) { Logger.log('❌ ABORT — id column missing'); return; }
+  
+  Logger.log('═══ DRY RUN — first 3 players ═══');
+  
+  // Map PROFILING column name → index
+  var profColIdx = {};
+  MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+    var colLower = col.toLowerCase();
+    for (var i = 0; i < profHeaders.length; i++) {
+      if (profHeaders[i].toLowerCase() === colLower) { profColIdx[col] = i; break; }
+    }
+  });
+  
+  var shown = 0;
+  for (var p = 1; p < profData.length && shown < 3; p++) {
+    var pid = String(profData[p][profIdCol] || '').trim();
+    if (!pid) continue;
+    Logger.log('');
+    Logger.log('▶ Player id: ' + pid);
+    MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+      var idx = profColIdx[col];
+      if (idx === undefined) return;
+      var val = profData[p][idx];
+      if (val === '' || val === null || val === undefined) return;
+      var vs = String(val);
+      if (vs.length > 60) vs = vs.substring(0, 60) + '…';
+      Logger.log('   ' + col + ' = ' + vs);
+    });
+    shown++;
+  }
+  Logger.log('');
+  Logger.log('═══ DONE ═══');
+  Logger.log('If values look correct → run migrationRun() to perform real migration.');
+}
+
+/**
+ * STEP 3 — REAL MIGRATION.
+ * 1) Makes a backup of PROFILING
+ * 2) Adds missing columns to GD
+ * 3) Copies manual column values from PROFILING to GD by id match
+ * Sets DocumentProperty PROFILING_MIGRATED=true on success.
+ */
+function migrationRun() {
+  var s = _migGetSheets();
+  
+  // 1) Backup
+  var stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd_HH-mm');
+  var backupName = 'PROFILING_BACKUP_' + stamp;
+  var existing = s.ss.getSheetByName(backupName);
+  if (existing) s.ss.deleteSheet(existing);
+  s.profSheet.copyTo(s.ss).setName(backupName);
+  Logger.log('✅ Backup created: ' + backupName);
+  
+  var profData = s.profSheet.getDataRange().getValues();
+  var gdHeaders = s.gdSheet.getRange(1, 1, 1, Math.max(1, s.gdSheet.getLastColumn())).getValues()[0]
+                     .map(function(h){ return String(h || '').trim(); });
+  var profHeaders = profData[0].map(function(h){ return String(h || '').trim(); });
+  var profIdCol = _migFindIdCol(profHeaders);
+  var gdIdCol = _migFindIdCol(gdHeaders);
+  if (profIdCol === -1 || gdIdCol === -1) throw new Error('id column missing');
+  
+  // 2) Add missing columns to GD
+  var gdHeadersLower = gdHeaders.map(function(h){ return h.toLowerCase(); });
+  var addedCols = [];
+  MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+    var colLower = col.toLowerCase();
+    if (gdHeadersLower.indexOf(colLower) === -1 && profHeaders.some(function(h){ return h.toLowerCase() === colLower; })) {
+      // Add column at the end
+      var newColIdx = s.gdSheet.getLastColumn() + 1;
+      s.gdSheet.getRange(1, newColIdx).setValue(col);
+      gdHeaders.push(col);
+      gdHeadersLower.push(colLower);
+      addedCols.push(col);
+    }
+  });
+  Logger.log('✅ Added ' + addedCols.length + ' new columns to GD');
+  if (addedCols.length > 0) Logger.log('   ' + addedCols.join(', '));
+  
+  // Refresh GD data after adding columns
+  var gdData = s.gdSheet.getDataRange().getValues();
+  
+  // Build GD id → row map (1-based row index)
+  var gdIdToRow = {};
+  for (var i = 1; i < gdData.length; i++) {
+    var id = String(gdData[i][gdIdCol] || '').trim();
+    if (id) gdIdToRow[id] = i + 1;
+  }
+  
+  // Map PROFILING column → idx, GD column → idx
+  var profColIdx = {};
+  var gdColIdx = {};
+  MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+    var colLower = col.toLowerCase();
+    for (var i = 0; i < profHeaders.length; i++) {
+      if (profHeaders[i].toLowerCase() === colLower) { profColIdx[col] = i; break; }
+    }
+    for (var j = 0; j < gdHeadersLower.length; j++) {
+      if (gdHeadersLower[j] === colLower) { gdColIdx[col] = j; break; }
+    }
+  });
+  
+  // 3) Copy values
+  var matched = 0, unmatched = 0;
+  for (var p = 1; p < profData.length; p++) {
+    var pid = String(profData[p][profIdCol] || '').trim();
+    if (!pid) continue;
+    var gdRow = gdIdToRow[pid];
+    if (!gdRow) { unmatched++; continue; }
+    
+    MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
+      var pIdx = profColIdx[col];
+      var gIdx = gdColIdx[col];
+      if (pIdx === undefined || gIdx === undefined) return;
+      var val = profData[p][pIdx];
+      if (val === '' || val === null || val === undefined) return;
+      try {
+        s.gdSheet.getRange(gdRow, gIdx + 1).setValue(val);
+      } catch (e) {
+        Logger.log('⚠ row ' + gdRow + ' col ' + col + ': ' + e);
+      }
+    });
+    matched++;
+  }
+  
+  Logger.log('');
+  Logger.log('═══ MIGRATION COMPLETE ═══');
+  Logger.log('✅ Migrated: ' + matched + ' players');
+  Logger.log('❌ Unmatched: ' + unmatched);
+  Logger.log('💾 Backup: ' + backupName);
+  
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATED', 'true');
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATION_DATE', stamp);
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_BACKUP_NAME', backupName);
+  Logger.log('');
+  Logger.log('Next: run migrationFinalize() to switch app to read/write from GD.');
+}
+
+/**
+ * STEP 4 — Switch app to read/write from GD instead of PROFILING.
+ * Sets PROFILING_SHEET_NAME=GENERAL DASHBOARD.
+ * Reload the web app after running this.
+ */
+function migrationFinalize() {
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_SHEET_NAME', 'GENERAL DASHBOARD');
+  Logger.log('✅ App switched to GENERAL DASHBOARD as the profiling sheet.');
+  Logger.log('Reload the web app — all reads/writes will now go to GD.');
+}
+
+/**
+ * Rollback — restores PROFILING from backup and switches app back.
+ * (Note: doesn't undo GD column additions or value writes — those stay in GD.)
+ */
+function migrationRollback() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var backupName = PropertiesService.getDocumentProperties().getProperty('PROFILING_BACKUP_NAME');
+  if (!backupName) { Logger.log('❌ No backup recorded — nothing to roll back to'); return; }
+  var backup = ss.getSheetByName(backupName);
+  if (!backup) { Logger.log('❌ Backup sheet "' + backupName + '" not found'); return; }
+  Logger.log('Backup exists: ' + backupName);
+  Logger.log('NOTE: This only resets the app sheet pointer. The GD column writes remain.');
+  PropertiesService.getDocumentProperties().deleteProperty('PROFILING_SHEET_NAME');
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATED', 'false');
+  Logger.log('✅ App pointer reset to PROFILING.');
+}
+
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  POST-MIGRATION: WHITELIST OF PROFILING FIELDS
+//  After migration, GD has ~50+ columns but profiling app should only show
+//  the ~30 original PROFILING columns. Whitelist is built once from the
+//  backup sheet and stored in DocumentProperties.
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Build the whitelist of fields to show in profiling app — based on the
+ * PROFILING backup sheet headers. Stores result in DocumentProperty
+ * 'PROFILING_FIELD_WHITELIST' as JSON array (lowercased).
+ *
+ * If 'first_name' OR 'last_name' columns exist in GD and PROFILING had a
+ * 'name' column, the virtual 'name' field is added to the whitelist and
+ * first_name/last_name are excluded (combined in getPlayerProfilingData).
+ *
+ * Run this once after migrationFinalize().
+ */
+function migrationBuildWhitelist() {
+  var backupName = PropertiesService.getDocumentProperties().getProperty('PROFILING_BACKUP_NAME');
+  if (!backupName) {
+    Logger.log('❌ No backup recorded — run migrationRun() first');
+    return;
+  }
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var backup = ss.getSheetByName(backupName);
+  if (!backup) {
+    Logger.log('❌ Backup sheet "' + backupName + '" not found');
+    return;
+  }
+  
+  var headers = backup.getRange(1, 1, 1, backup.getLastColumn()).getValues()[0]
+                      .map(function(h){ return String(h || '').trim(); })
+                      .filter(function(h){ return h.length > 0; });
+  
+  Logger.log('PROFILING backup has ' + headers.length + ' columns');
+  
+  // Lowercase for matching
+  var whitelist = headers.map(function(h){ return h.toLowerCase(); });
+  
+  PropertiesService.getDocumentProperties().setProperty('PROFILING_FIELD_WHITELIST', JSON.stringify(whitelist));
+  
+  Logger.log('═══ WHITELIST BUILT ═══');
+  Logger.log('Fields shown in profiling app (' + whitelist.length + '):');
+  headers.forEach(function(h){ Logger.log('  • ' + h); });
+  Logger.log('');
+  Logger.log('Reload the web app to apply.');
+}
+
+/** Get whitelist as array of lowercased column names. Returns null = no whitelist (show all). */
+function _profGetWhitelist() {
+  try {
+    var raw = PropertiesService.getDocumentProperties().getProperty('PROFILING_FIELD_WHITELIST');
+    if (!raw) return null;
+    var arr = JSON.parse(raw);
+    if (!Array.isArray(arr) || arr.length === 0) return null;
+    return arr;
+  } catch (e) { return null; }
+}
+
+/** Returns whitelist as Set-like object {lowerName: true}. */
+function _profGetWhitelistSet() {
+  var arr = _profGetWhitelist();
+  if (!arr) return null;
+  var s = {};
+  arr.forEach(function(k){ s[k] = true; });
+  return s;
 }
