@@ -18,26 +18,19 @@ function debugGroupMatching() {
   if (!groupsSheet) { Logger.log('ERROR: GROUPS sheet not found'); return; }
   var gData = groupsSheet.getDataRange().getValues();
   var gHeaders = gData[0];
-  Logger.log('=== GROUPS SHEET ===');
-  Logger.log('Headers: ' + JSON.stringify(gHeaders));
-  Logger.log('Total rows: ' + (gData.length - 1));
   
   // Log first 5 rows raw
   for (var r = 1; r < Math.min(6, gData.length); r++) {
-    Logger.log('Row ' + r + ': ' + JSON.stringify(gData[r]));
   }
   
   // Find columns
   var gH = gHeaders.map(function(h) { return String(h).trim().toLowerCase(); });
   var groupCol = gH.indexOf('group');
   var nameCol = gH.indexOf('name');
-  Logger.log('group col index: ' + groupCol + ', name col index: ' + nameCol);
   
   if (groupCol >= 0) {
-    Logger.log('--- Raw GROUP column values (first 10): ---');
     for (var r = 1; r < Math.min(11, gData.length); r++) {
       var raw = gData[r][groupCol];
-      Logger.log('  Row ' + r + ': type=' + typeof raw + ', value=' + JSON.stringify(raw) + ', toString="' + String(raw) + '"');
     }
   }
   
@@ -48,32 +41,22 @@ function debugGroupMatching() {
   var gdH = gdData[0].map(function(h) { return String(h).trim().toLowerCase(); });
   var emailCol = gdH.indexOf('email');
   var groupsCol = gdH.indexOf('groups');
-  Logger.log('\n=== GENERAL DASHBOARD ===');
-  Logger.log('Headers: ' + JSON.stringify(gdData[0]));
-  Logger.log('Total rows: ' + (gdData.length - 1));
-  Logger.log('email col: ' + emailCol + ', groups col: ' + groupsCol);
   
   if (groupsCol >= 0) {
-    Logger.log('--- Raw GROUPS column values (first 10 non-empty): ---');
     var logged = 0;
     for (var p = 1; p < gdData.length && logged < 10; p++) {
       var raw = gdData[p][groupsCol];
       if (raw && String(raw).trim() !== '' && String(raw).trim() !== '[]') {
-        Logger.log('  Row ' + p + ': type=' + typeof raw + ', value=' + JSON.stringify(raw) + ', toString="' + String(raw) + '"');
         logged++;
       }
     }
     if (logged === 0) {
-      Logger.log('  ⚠️ ALL groups values are EMPTY! No player has any group assigned.');
       // Check if column name is correct
-      Logger.log('  All column headers: ' + JSON.stringify(gdH));
       // Try to find any column containing "group"
       for (var c = 0; c < gdH.length; c++) {
         if (gdH[c].indexOf('group') !== -1) {
-          Logger.log('  Found column with "group" at index ' + c + ': "' + gdH[c] + '"');
           // Show sample values from this column
           for (var p2 = 1; p2 < Math.min(6, gdData.length); p2++) {
-            Logger.log('    Row ' + p2 + ': ' + JSON.stringify(gdData[p2][c]));
           }
         }
       }
@@ -85,10 +68,8 @@ function debugGroupMatching() {
       var raw = String(gdData[p][groupsCol] || '').trim();
       if (raw && raw !== '' && raw !== '[]') nonEmpty++;
     }
-    Logger.log('Players with non-empty groups: ' + nonEmpty + ' out of ' + (gdData.length - 1));
   }
   
-  Logger.log('\n=== DONE ===');
 }
 
 /******************** MENU ********************/
@@ -190,7 +171,6 @@ function createOnboardingMeetings(params) {
           }
         } catch(meetErr) {
           // Meet API may not be enabled - still create event without Meet
-          Logger.log('Meet conference creation failed: ' + meetErr);
         }
 
         results.push({
@@ -243,7 +223,6 @@ function getFreeBusy(params) {
           });
         });
       } catch(e2) {
-        Logger.log('FreeBusy error for ' + email + ': ' + e2);
       }
     });
     return { success: true, busy: busy };
@@ -285,10 +264,8 @@ function createSingleMeeting(params) {
       if (eps[i].entryPointType === 'video') { meetUrl = eps[i].uri; break; }
     }
 
-    Logger.log('createSingleMeeting: id=' + created.id + ' meetUrl=' + meetUrl);
     return { success: true, eventId: created.id, meetUrl: meetUrl };
   } catch(e) {
-    Logger.log('createSingleMeeting ERROR: ' + e.message);
     return { error: e.message };
   }
 }
@@ -436,9 +413,8 @@ function saveOnboardingAssignments(assignments) {
     var lastRow = sheet.getLastRow();
     if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 1).clearContent();
     // Write one assignment per row
-    (assignments || []).forEach(function(a, i) {
-      sheet.getRange(i + 2, 1).setValue(JSON.stringify(a));
-    });
+    var _aRows = (assignments || []).map(function(a) { return [JSON.stringify(a)]; });
+    if (_aRows.length) sheet.getRange(2, 1, _aRows.length, 1).setValues(_aRows);
     return { success: true };
   } catch(e) { return { error: e.message }; }
 }
@@ -508,9 +484,8 @@ function saveOnboardingPlans(plans) {
     }
     var lastRow = sheet.getLastRow();
     if (lastRow > 1) sheet.getRange(2, 1, lastRow - 1, 1).clearContent();
-    (plans || []).forEach(function(p, i) {
-      sheet.getRange(i + 2, 1).setValue(JSON.stringify(p));
-    });
+    var _pRows = (plans || []).map(function(p) { return [JSON.stringify(p)]; });
+    if (_pRows.length) sheet.getRange(2, 1, _pRows.length, 1).setValues(_pRows);
     return { success: true };
   } catch(e) { return { error: e.message }; }
 }
@@ -793,7 +768,6 @@ function getAdminPanelData() {
     if (rolesSheet) {
       var firstHeader = String(rolesSheet.getRange(1, 1).getValue()).trim().toLowerCase();
       if (firstHeader !== 'role') {
-        Logger.log('ROLES sheet invalid (first header: ' + firstHeader + '), rebuilding...');
         ss.deleteSheet(rolesSheet);
         rolesSheet = null;
       }
@@ -815,7 +789,6 @@ function getAdminPanelData() {
       rolesSheet.getRange(1, 1, allData.length, allData[0].length).setValues(allData);
       rolesSheet.getRange(1, 1, 1, headers.length).setFontWeight('bold');
       rolesSheet.autoResizeColumns(1, headers.length);
-      Logger.log('ROLES sheet created: ' + headers.length + ' cols, ' + result.allRoles.length + ' roles');
     }
     
     var rData = rolesSheet.getDataRange().getValues();
@@ -829,8 +802,11 @@ function getAdminPanelData() {
       if (!existingPageMap[dp.id]) {
         var lastCol = rolesSheet.getLastColumn() + 1;
         rolesSheet.getRange(1, lastCol).setValue(dp.id).setFontWeight('bold');
-        for (var r = 2; r <= rolesSheet.getLastRow(); r++) {
-          rolesSheet.getRange(r, lastCol).setValue('TRUE');
+        var _nr = rolesSheet.getLastRow() - 1;
+        if (_nr > 0) {
+          var _trueArr = [];
+          for (var _t = 0; _t < _nr; _t++) _trueArr.push(['TRUE']);
+          rolesSheet.getRange(2, lastCol, _nr, 1).setValues(_trueArr);
         }
         existingPageMap[dp.id] = true;
       }
@@ -877,7 +853,6 @@ function getAdminPanelData() {
     return result;
     
   } catch(e) {
-    Logger.log('getAdminPanelData error: ' + e);
     return { error: e.message, users: [], pages: [], allRoles: [] };
   }
 }
@@ -962,7 +937,6 @@ function logUserActivity(params) {
     sheet.appendRow(row);
     return { success: true };
   } catch (e) {
-    Logger.log('logUserActivity error: ' + e);
     return { success: false, error: e.toString() };
   }
 }
@@ -1058,7 +1032,18 @@ function adminUpdateUser(params) {
     var row = Number(params.row);
     if (!row || row < 2) return { error: 'Invalid row' };
     var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(function(h) { return String(h).trim().toLowerCase(); });
-    var fields = ['role', 'manager', 'nickname'];
+    // Create full_name / slack columns on demand
+    if (params.full_name !== undefined && headers.indexOf('full_name') === -1) {
+      var newCol = sheet.getLastColumn() + 1;
+      sheet.getRange(1, newCol).setValue('full_name');
+      headers.push('full_name');
+    }
+    if (params.slack !== undefined && headers.indexOf('slack') === -1) {
+      var newCol2 = sheet.getLastColumn() + 1;
+      sheet.getRange(1, newCol2).setValue('slack');
+      headers.push('slack');
+    }
+    var fields = ['role', 'manager', 'nickname', 'full_name', 'slack'];
     fields.forEach(function(f) {
       if (params[f] !== undefined) {
         var col = headers.indexOf(f);
@@ -1271,6 +1256,35 @@ function deleteServiceSheetRow(key, rowIdx) {
   }
 }
 
+function replaceServiceSheet(key, headers, rows) {
+  try {
+    var cfg = SERVICE_SHEETS[key];
+    if (!cfg) return { error: 'Unknown sheet' };
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = null;
+    for (var i = 0; i < cfg.names.length; i++) { sheet = ss.getSheetByName(cfg.names[i]); if (sheet) break; }
+    if (!sheet) sheet = ss.insertSheet(cfg.names[0]);
+    headers = headers || [];
+    rows = rows || [];
+    var ncol = headers.length;
+    rows.forEach(function(r){ if (r && r.length > ncol) ncol = r.length; });
+    if (ncol < 1) ncol = 1;
+    var matrix = [];
+    var hdr = headers.slice();
+    while (hdr.length < ncol) hdr.push('');
+    matrix.push(hdr);
+    rows.forEach(function(r){
+      var rr = (r || []).slice();
+      while (rr.length < ncol) rr.push('');
+      if (rr.length > ncol) rr = rr.slice(0, ncol);
+      matrix.push(rr.map(function(c){ return (c == null) ? '' : c; }));
+    });
+    sheet.clearContents();
+    sheet.getRange(1, 1, matrix.length, ncol).setValues(matrix);
+    return { success: true, rowCount: rows.length };
+  } catch(e) { return { error: e.message }; }
+}
+
 function ensureRoleInRolesSheet_(roleName) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var sheet = ss.getSheetByName('ROLES');
@@ -1290,6 +1304,84 @@ function ensureRoleInRolesSheet_(roleName) {
   sheet.appendRow(row);
 }
 /******************** TYPE MAPPING ********************/
+function debugTypeClassification() {
+  var out = [];
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    // 1) List sheet names to confirm TAGS/TYPE/GENERAL DASHBOARD exist
+    var names = ss.getSheets().map(function(s) { return s.getName(); });
+    out.push('SHEETS: ' + names.join(' | '));
+    out.push('');
+
+    // 2) TAGS sheet content (tag -> type)
+    var tagsSheet = ss.getSheetByName('TAGS');
+    out.push('=== TAGS sheet ===');
+    if (!tagsSheet) {
+      out.push('NOT FOUND (looked for "TAGS")');
+    } else {
+      var td = tagsSheet.getDataRange().getValues();
+      out.push('headers: ' + JSON.stringify(td[0]));
+      var shownT = 0;
+      for (var i = 1; i < td.length && shownT < 25; i++) {
+        var rowStr = td[i].join(' | ');
+        if (rowStr.toLowerCase().indexOf('churn') !== -1) { out.push('  ' + rowStr); shownT++; }
+      }
+      if (shownT === 0) out.push('  (no rows containing "churn")');
+    }
+    out.push('');
+
+    // 3) TYPE sheet content
+    var typeSheet = ss.getSheetByName('TYPE') || ss.getSheetByName('[TYPE]');
+    out.push('=== TYPE sheet ===');
+    if (!typeSheet) {
+      out.push('NOT FOUND');
+    } else {
+      var yd = typeSheet.getDataRange().getValues();
+      out.push('headers: ' + JSON.stringify(yd[0]));
+      for (var j = 1; j < yd.length; j++) {
+        var rs = yd[j].join(' | ');
+        if (rs.toLowerCase().indexOf('churn') !== -1) out.push('  ' + rs);
+      }
+    }
+    out.push('');
+
+    // 4) Resolved mapping for churn tags
+    var tm = getTypeMapping();
+    out.push('=== tagToType (churn tags only) ===');
+    var keys = Object.keys(tm.tagToType);
+    var cShown = 0;
+    keys.forEach(function(k) {
+      if (k.indexOf('churn') !== -1 && cShown < 25) { out.push('  ' + k + '  ->  ' + tm.tagToType[k]); cShown++; }
+    });
+    if (cShown === 0) out.push('  (no churn tags in mapping)');
+    out.push('');
+    out.push('totalGroups: ' + JSON.stringify(tm.totalGroups));
+    out.push('');
+
+    // 5) Sample GENERAL DASHBOARD players whose detected type is churn-ish
+    var dash = ss.getSheetByName('GENERAL DASHBOARD');
+    out.push('=== Sample players (detected as CHURN*) ===');
+    if (!dash) {
+      out.push('GENERAL DASHBOARD not found');
+    } else {
+      var players = getVIPSheetData(dash);
+      out.push('total players: ' + players.length);
+      var shown = 0;
+      for (var p = 0; p < players.length && shown < 15; p++) {
+        var det = detectPlayerType(players[p].tags, tm.tagToType);
+        if (String(det.type).toUpperCase().indexOf('CHURN') !== -1) {
+          out.push('  tags=' + JSON.stringify(players[p].tags) + '  =>  ' + det.type);
+          shown++;
+        }
+      }
+      if (shown === 0) out.push('  (no players detected as CHURN)');
+    }
+  } catch (e) {
+    out.push('ERROR: ' + e);
+  }
+  return out.join('\n');
+}
+
 function getTypeMapping() {
   var result = { tagToType: {}, typeMapping: {}, typeToTotal: {}, totalGroups: {} };
   try {
@@ -1298,16 +1390,21 @@ function getTypeMapping() {
     var sheet = ss.getSheetByName('TYPE') || ss.getSheetByName('[TYPE]');
     if (sheet) {
       var data = sheet.getDataRange().getValues();
+      var typeHdr = (data[0] || []).map(function(h) { return String(h).toLowerCase(); });
+      function _tmCol(needle, def) { for (var c = 0; c < typeHdr.length; c++) { if (typeHdr[c].indexOf(needle) !== -1) return c; } return def; }
+      var cType = _tmCol('type', 0);
+      var cTags = _tmCol('tag', 1);
+      var cTotal = _tmCol('total', 2);
       for (var i = 1; i < data.length; i++) {
-        var typeName = String(data[i][0] || '').trim();
-        var tagsRaw = String(data[i][1] || '').trim();
-        var totalGroup = String(data[i][2] || '').trim();
+        var typeName = String(data[i][cType] || '').trim();
+        var tagsRaw = String(data[i][cTags] || '').trim();
+        var totalGroup = String(data[i][cTotal] || '').trim();
         if (!typeName || !tagsRaw) continue;
         
         // Parse tags - can be JSON array or single tag
         var tags = [];
         if (tagsRaw.charAt(0) === '[') {
-          try { tags = JSON.parse(tagsRaw); } catch(e) { tags = [tagsRaw]; }
+          try { tags = JSON.parse(tagsRaw); } catch(e) { tags = tagsRaw.replace(/^\[/, '').replace(/\]$/, '').split(','); }
         } else {
           tags = tagsRaw.split(',').map(function(t) { return t.trim(); });
         }
@@ -1315,7 +1412,7 @@ function getTypeMapping() {
         if (!result.typeMapping[typeName]) result.typeMapping[typeName] = [];
         
         tags.forEach(function(tag) {
-          var t = String(tag).toLowerCase().trim().replace(/"/g, '');
+          var t = String(tag).toLowerCase().replace(/[\[\]"']/g, '').trim();
           if (t) {
             result.tagToType[t] = typeName;
             result.typeMapping[typeName].push(t);
@@ -1332,9 +1429,32 @@ function getTypeMapping() {
         }
       }
     }
-    Logger.log('TYPE mapping loaded: ' + Object.keys(result.tagToType).length + ' tags → ' + Object.keys(result.typeMapping).length + ' types, ' + Object.keys(result.totalGroups).length + ' total groups');
+
+    // Authoritative per-tag overrides from the TAGS sheet (managed in Tags Library).
+    // This is the source of truth for which subtype each tag belongs to, so it
+    // wins over any stale/misaligned TYPE-sheet rows.
+    try {
+      var tagsSheet = ss.getSheetByName('TAGS');
+      if (tagsSheet) {
+        var tdata = tagsSheet.getDataRange().getValues();
+        if (tdata.length > 1) {
+          var thdr = (tdata[0] || []).map(function(h) { return String(h).toLowerCase(); });
+          function _tagCol(needle, def) { for (var c = 0; c < thdr.length; c++) { if (thdr[c].indexOf(needle) !== -1) return c; } return def; }
+          var cTg = _tagCol('tag', 0);
+          var cTy = _tagCol('type', 1);
+          for (var rr = 1; rr < tdata.length; rr++) {
+            var tg = String(tdata[rr][cTg] || '').toLowerCase().trim().replace(/"/g, '');
+            var ty = String(tdata[rr][cTy] || '').trim();
+            if (!tg || !ty) continue;
+            result.tagToType[tg] = ty; // authoritative
+            if (!result.typeMapping[ty]) result.typeMapping[ty] = [];
+            if (result.typeMapping[ty].indexOf(tg) === -1) result.typeMapping[ty].push(tg);
+          }
+        }
+      }
+    } catch (e2) {
+    }
   } catch (e) {
-    Logger.log('Error loading TYPE mapping: ' + e);
   }
   return result;
 }
@@ -1345,16 +1465,17 @@ function getTypeMapping() {
  * Returns: { tagToManager: {tag: managerName}, managerMapping: {managerName: [tags]} }
  */
 function getManagerMapping() {
+  try { var _mh = CacheService.getScriptCache().get('cache_mgrmap_v1'); if (_mh) return JSON.parse(_mh); } catch (e) {}
   var result = { tagToManager: {}, managerMapping: {} };
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('MANAGER') || ss.getSheetByName('[MANAGER]');
     if (!sheet) {
-      Logger.log('MANAGER sheet not found');
       return result;
     }
     
     var data = sheet.getDataRange().getValues();
+    if (!data || data.length < 2) return result;
     for (var i = 1; i < data.length; i++) {
       var managerName = String(data[i][0] || '').trim();
       var tagsRaw = String(data[i][1] || '').trim();
@@ -1378,10 +1499,9 @@ function getManagerMapping() {
       });
     }
     
-    Logger.log('MANAGER mapping loaded: ' + Object.keys(result.tagToManager).length + ' tags → ' + Object.keys(result.managerMapping).length + ' managers');
   } catch (e) {
-    Logger.log('Error loading MANAGER mapping: ' + e);
   }
+  try { var _ms = JSON.stringify(result); if (_ms.length < 95000) CacheService.getScriptCache().put('cache_mgrmap_v1', _ms, 300); } catch (e) {}
   return result;
 }
 
@@ -1396,15 +1516,13 @@ function getVocabulary() {
     var vocabSheet = ss.getSheetByName('VOCABULARY');
     
     if (!vocabSheet) {
-      Logger.log('VOCABULARY sheet not found - using empty vocabulary');
       return {};
     }
     
     var data = vocabSheet.getDataRange().getValues();
+    if (!data || data.length < 2) return {};
     var vocabulary = {};
     
-    Logger.log('=== Reading VOCABULARY Sheet ===');
-    Logger.log('Total rows: ' + data.length);
     
     // Skip header row (row 0)
     for (var i = 1; i < data.length; i++) {
@@ -1427,15 +1545,12 @@ function getVocabulary() {
           filter: filterFlag === 'filter' ? 'filter' : ''
         };
         
-        Logger.log('Added metric: ' + metricId + ' → ' + metricName + ' (' + metricType + ')' + (filterFlag === 'filter' ? ' [FILTER]' : ''));
       }
     }
     
-    Logger.log('Vocabulary loaded: ' + Object.keys(vocabulary).length + ' metrics');
     return vocabulary;
     
   } catch (error) {
-    Logger.log('ERROR reading vocabulary: ' + error.toString());
     return {};
   }
 }
@@ -1448,13 +1563,11 @@ function getVIPDashboardData() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
-    Logger.log('=== VIP Dashboard Data Loading ===');
     
     // Try new dynamic system first (with prefix)
     var dynamicData = getVIPGroupData('vip_dashboard');
     
     if (dynamicData && !dynamicData.error && dynamicData.players && dynamicData.players.length > 0) {
-      Logger.log('Using dynamic system - found ' + dynamicData.players.length + ' players');
       
       // Split by vipType for metrics calculation
       var vipPlayers = [];
@@ -1468,12 +1581,9 @@ function getVIPDashboardData() {
         }
       });
       
-      Logger.log('VIP players: ' + vipPlayers.length);
-      Logger.log('Silent VIP players: ' + silentVipPlayers.length);
       
       // Calculate metrics
       var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, dynamicData.vocabulary);
-      Logger.log('Metrics calculated successfully');
       
       return {
         playerCounts: {
@@ -1491,12 +1601,9 @@ function getVIPDashboardData() {
     }
     
     // Fallback to old system (sheets without prefix)
-    Logger.log('Dynamic system not found, trying legacy sheet names...');
     var vipSheet = ss.getSheetByName('VIP');
     var silentVipSheet = ss.getSheetByName('SILENT VIP');
     
-    Logger.log('VIP Sheet: ' + (vipSheet ? 'found' : 'NOT FOUND'));
-    Logger.log('Silent VIP Sheet: ' + (silentVipSheet ? 'found' : 'NOT FOUND'));
     
     if (!vipSheet || !silentVipSheet) {
       return {
@@ -1508,15 +1615,12 @@ function getVIPDashboardData() {
     
     // Get vocabulary
     var vocabulary = getVocabulary();
-    Logger.log('Vocabulary metrics count: ' + Object.keys(vocabulary).length);
     
     // Get VIP players
     var vipPlayers = getVIPSheetData(vipSheet);
-    Logger.log('VIP players loaded: ' + vipPlayers.length);
     
     // Get SILENT VIP players
     var silentVipPlayers = getVIPSheetData(silentVipSheet);
-    Logger.log('Silent VIP players loaded: ' + silentVipPlayers.length);
     
     if (vipPlayers.length === 0 && silentVipPlayers.length === 0) {
       return {
@@ -1526,7 +1630,6 @@ function getVIPDashboardData() {
     
     // Calculate metrics
     var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary);
-    Logger.log('Metrics calculated successfully');
     
     // CRITICAL: Return allPlayers for client-side filtering (like Retention Rate)
     var result = {
@@ -1543,13 +1646,10 @@ function getVIPDashboardData() {
       }
     };
     
-    Logger.log('=== VIP Dashboard Data Ready ===');
-    Logger.log('Returning ' + result.allPlayers.vip.length + ' VIP + ' + result.allPlayers.silentVip.length + ' Silent VIP players');
     
     return result;
     
   } catch (error) {
-    Logger.log('ERROR in getVIPDashboardData: ' + error.toString());
     return {
       error: 'Error loading VIP data: ' + error.toString()
     };
@@ -1572,8 +1672,6 @@ function calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary) {
     pies: {}
   };
   
-  Logger.log('=== Calculating VIP Metrics ===');
-  Logger.log('Total players: ' + allPlayers.length + ' (VIP: ' + vipPlayers.length + ', Silent: ' + silentVipPlayers.length + ')');
   
   var processedCount = 0;
   
@@ -1621,7 +1719,6 @@ function calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary) {
         silentVip: silentDist
       };
       
-      Logger.log('Pie metric: ' + metricId + ' - Total categories: ' + Object.keys(totalDist).length);
     } else {
       // Calculate totals for sum/count metrics
       var totalSum = 0;
@@ -1654,11 +1751,9 @@ function calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary) {
         silentVip: silentVipSum
       };
       
-      Logger.log('Metric: ' + metricId + ' (' + metricType + ') - Total: ' + totalSum + ', VIP: ' + vipSum + ', Silent: ' + silentVipSum);
     }
   });
   
-  Logger.log('Processed ' + processedCount + ' metrics from vocabulary');
   
   return metrics;
 }
@@ -1703,7 +1798,6 @@ function getVIPSheetData(sheet) {
               value = [];
             }
           } catch (e) {
-            Logger.log('Failed to parse tags for player ' + (playerObj.id || i) + ': ' + e);
             value = [];
           }
         }
@@ -1722,7 +1816,6 @@ function getVIPSheetData(sheet) {
     }
   }
   
-  Logger.log('getVIPSheetData: ' + result.length + ' players with ' + headers.length + ' columns');
   return result;
 }
 
@@ -1754,7 +1847,6 @@ function getAllPlayersForFilters() {
     }
   });
   
-  Logger.log('getAllPlayersForFilters: ' + allPlayers.length + ' unique players');
   return allPlayers;
 }
 
@@ -2101,20 +2193,14 @@ function getRetentionV2Data(params) {
       };
     }
     
-    Logger.log('RetV2: ' + Object.keys(playerGroups).length + ' players loaded');
     
     // DEBUG: Log sample data to diagnose matching
     var samplePlayerEmails = Object.keys(playerGroups).slice(0, 3);
     samplePlayerEmails.forEach(function(e) {
-      Logger.log('DEBUG player "' + e + '" groups: [' + playerGroups[e].join(', ') + ']');
     });
-    Logger.log('DEBUG FTD groups to match:');
     ftdGroups.slice(0, 3).forEach(function(g) {
-      Logger.log('  "' + g.name + '" groupIds: [' + g.groupIds.join(', ') + ']');
     });
-    Logger.log('DEBUG ACTIVE groups to match:');
     activeGroups.slice(0, 3).forEach(function(g) {
-      Logger.log('  "' + g.name + '" groupIds: [' + g.groupIds.join(', ') + ']');
     });
     
     // 3. Build player email arrays per group
@@ -2134,10 +2220,8 @@ function getRetentionV2Data(params) {
     
     // DEBUG: Log how many players matched each group
     ftdSets.forEach(function(s) {
-      Logger.log('DEBUG FTD "' + s.def.name + '" (ids: ' + s.def.groupIds.join(',') + '): ' + s.emails.length + ' players matched');
     });
     activeSets.forEach(function(s) {
-      Logger.log('DEBUG ACTIVE "' + s.def.name + '" (ids: ' + s.def.groupIds.join(',') + '): ' + s.emails.length + ' players matched');
     });
     // DEBUG: Check if ANY player has ANY of the GROUPS IDs
     var allTargetIds = [];
@@ -2148,8 +2232,6 @@ function getRetentionV2Data(params) {
     for (var email in playerGroups) {
       if (groupIdMatch(playerGroups[email], allTargetIds)) matchCount++;
     }
-    Logger.log('DEBUG TOTAL players matching ANY group: ' + matchCount + ' out of ' + Object.keys(playerGroups).length);
-    Logger.log('DEBUG All target group IDs: [' + allTargetIds.join(', ') + ']');
     // Sample of actual player group IDs (unique)
     var samplePGIds = {};
     var ct = 0;
@@ -2158,7 +2240,6 @@ function getRetentionV2Data(params) {
       playerGroups[email].forEach(function(id) { samplePGIds[id] = true; });
       ct++;
     }
-    Logger.log('DEBUG Sample player group IDs: [' + Object.keys(samplePGIds).sort().join(', ') + ']');
     
     // 4. Build result with pre-calculated retention + raw email arrays
     var srcEmailArrays = [];
@@ -2211,7 +2292,6 @@ function getRetentionV2Data(params) {
     
     return result;
   } catch(e) {
-    Logger.log('RetV2 error: ' + e.message);
     return { error: e.message };
   }
 }
@@ -2364,15 +2444,16 @@ function getCellPlayersRetentionV2(params) {
 }
 
 function getTrafficTypeMapping() {
+  try { var _th = CacheService.getScriptCache().get('cache_trafmap_v1'); if (_th) return JSON.parse(_th); } catch (e) {}
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var generalSheet = ss.getSheetByName('GENERAL INFO');
   
   if (!generalSheet) {
-    Logger.log('GENERAL INFO sheet not found');
     return {};
   }
   
   var data = generalSheet.getDataRange().getValues();
+  if (!data || data.length < 2) return {};
   var headers = data[0];
   
   var stagIdx = -1, typeIdx = -1, dirIdx = -1, srcIdx = -1;
@@ -2386,7 +2467,6 @@ function getTrafficTypeMapping() {
   }
   
   if (stagIdx === -1 || typeIdx === -1) {
-    Logger.log('STAG or TYPE column not found in GENERAL INFO');
     return {};
   }
   
@@ -2407,7 +2487,7 @@ function getTrafficTypeMapping() {
     }
   }
   
-  Logger.log('Traffic mapping from GENERAL INFO: ' + Object.keys(mapping).length + ' stags');
+  try { var _ts = JSON.stringify(mapping); if (_ts.length < 95000) CacheService.getScriptCache().put('cache_trafmap_v1', _ts, 300); } catch (e) {}
   return mapping;
 }
 
@@ -2466,9 +2546,6 @@ function getRetentionData() {
   ftdSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   
-  Logger.log('=== getRetentionData ===');
-  Logger.log('FTD sheets: ' + ftdSheets.map(function(s) { return s.getName(); }).join(', '));
-  Logger.log('ACTIVE sheets: ' + activeSheets.map(function(s) { return s.getName(); }).join(', '));
   
   var result = { months: [], rows: [] };
   
@@ -2485,7 +2562,6 @@ function getRetentionData() {
     var ftdCount = ftdData.length;
     var ftdPlayerIds = ftdData.map(function(p) { return p.id; });
     
-    Logger.log('FTD "' + ftdName + '": ' + ftdCount + ' players, sample IDs: ' + ftdPlayerIds.slice(0, 3).join(', '));
     
     var row = { month: ftdMonth, ftdCount: ftdCount, retention: [] };
     
@@ -2501,9 +2577,6 @@ function getRetentionData() {
       
       // Debug: log if 0 retained but both sheets have data
       if (retainedCount === 0 && ftdCount > 0 && activeData.length > 0) {
-        Logger.log('⚠️ 0 retained: "' + ftdName + '" (' + ftdCount + ' players) vs "' + activeSheet.getName() + '" (' + activeData.length + ' players)');
-        Logger.log('  FTD IDs sample: ' + ftdPlayerIds.slice(0, 3).join(', '));
-        Logger.log('  ACTIVE IDs sample: ' + activeData.slice(0, 3).map(function(p) { return p.id; }).join(', '));
       }
       
       row.retention.push({
@@ -2535,8 +2608,6 @@ function getRetentionMoMData() {
   
   activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   
-  Logger.log('=== getRetentionMoMData ===');
-  Logger.log('ACTIVE sheets: ' + activeSheets.map(function(s) { return s.getName(); }).join(', '));
   
   // Load all active sheet data
   var allActive = [];
@@ -2575,7 +2646,6 @@ function getRetentionMoMData() {
     result.rows.push(row);
   });
   
-  Logger.log('MoM result: ' + result.rows.length + ' cohorts, ' + result.months.length + ' months');
   return result;
 }
 
@@ -2595,8 +2665,6 @@ function getWeeklyRetentionMoMData() {
   
   activeSheets.sort(function(a, b) { return sheets.indexOf(a) - sheets.indexOf(b); });
   
-  Logger.log('=== getWeeklyRetentionMoMData ===');
-  Logger.log('Weekly ACTIVE sheets: ' + activeSheets.length);
   
   var allActive = [];
   activeSheets.forEach(function(sheet) {
@@ -2772,10 +2840,8 @@ function getDepositConversionV2Data(params) {
       result.playerDeposits[email] = players[email].depositCount;
     }
     
-    Logger.log('DepV2 mode=' + mode + ': ' + ftdGroups.length + ' FTD groups');
     return result;
   } catch(e) {
-    Logger.log('DepV2 error: ' + e.message);
     return { error: e.message };
   }
 }
@@ -2794,7 +2860,6 @@ function getDepositConversionData() {
   // Build lookup map: id → depositCount
   var gdMap = {};
   gdData.forEach(function(p) { gdMap[p.id] = p.depositCount; });
-  Logger.log('GENERAL DASHBOARD loaded: ' + gdData.length + ' players');
   
   var ftdSheets = [];
   var weekPattern = /^\d{2}\.\d{2}\s*-\s*\d{2}\.\d{2}/;
@@ -2857,7 +2922,6 @@ function getSheetData(sheet) {
   }
   
   if (idIdx === -1) {
-    Logger.log('WARNING: getSheetData - no "id" column found in sheet: ' + sheet.getName() + ', headers: ' + headers.join(', '));
     return [];
   }
   
@@ -2897,7 +2961,6 @@ function getCellPlayers(params) {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   
   var ftdSheetName = month.toUpperCase() + ' FTD';
-  Logger.log('Looking for FTD: ' + ftdSheetName);
   
   var ftdSheet = ss.getSheetByName(ftdSheetName);
   if (!ftdSheet) {
@@ -2917,7 +2980,6 @@ function getCellPlayers(params) {
   // Build lookup map: id → player object
   var gdMap = {};
   gdPlayers.forEach(function(p) { gdMap[p.id] = p; });
-  Logger.log('GENERAL DASHBOARD loaded: ' + gdPlayers.length + ' players');
   
   // Get FTD player IDs
   var ftdData = ftdSheet.getDataRange().getValues();
@@ -2932,7 +2994,6 @@ function getCellPlayers(params) {
     var id = String(ftdData[i][ftdIdIdx] || '').trim();
     if (id) ftdPlayerIds.push(id);
   }
-  Logger.log('FTD player IDs: ' + ftdPlayerIds.length);
   
   function buildPlayerInfo(player) {
     return {
@@ -2993,7 +3054,6 @@ function getCellPlayers(params) {
     }
   });
   
-  Logger.log('Result: ' + achieved.length + ' achieved, ' + dropped.length + ' dropped');
   
   return {
     achieved: achieved,
@@ -3006,6 +3066,7 @@ function getCellPlayers(params) {
 
 function getDetailedSheetData(sheet) {
   var data = sheet.getDataRange().getValues();
+  if (!data || data.length < 2) return [];
   var headers = data[0];
   
   var idIdx = -1;
@@ -3697,7 +3758,6 @@ function readMetricFormats() {
     
     return formats;
   } catch (e) {
-    Logger.log('Error in readMetricFormats: ' + e.toString());
     return {};
   }
 }
@@ -3711,8 +3771,6 @@ function kpiLoadProject() {
     var tabsFound = found.tabs;
     var groupMap = found.groups;
     
-    Logger.log('Found tabs: ' + JSON.stringify(Object.keys(tabsFound)));
-    Logger.log('Groups: ' + JSON.stringify(groupMap));
     
     if (Object.keys(tabsFound).length === 0) {
       throw new Error('No [VIP] or [TOTAL] sheets found');
@@ -3760,7 +3818,6 @@ function kpiLoadProject() {
       var nonZero = {};
       metricsArr.forEach(function (m) { nonZero[m] = hasNonZero_(months, m); });
       
-      Logger.log(tab + ': ' + metricsArr.length + ' metrics, ' + months.length + ' months');
       
       result.tabs[tab] = { metrics: metricsArr, months: months, nonZero: nonZero };
     }
@@ -3771,7 +3828,6 @@ function kpiLoadProject() {
 
     return result;
   } catch (e) {
-    Logger.log('Error in kpiLoadProject: ' + e.toString());
     return {
       tabs: {},
       metricFormats: {},
@@ -3983,8 +4039,6 @@ function hasNonZero_(months, metric){
 
 function getFilteredVIPDashboardData(filters) {
   try {
-    Logger.log('=== VIP Dashboard Filtered Data Loading ===');
-    Logger.log('Filters: ' + JSON.stringify(filters));
     
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var vipSheet = ss.getSheetByName('VIP');
@@ -4000,14 +4054,10 @@ function getFilteredVIPDashboardData(filters) {
     var allVipPlayers = getVIPSheetData(vipSheet);
     var allSilentVipPlayers = getVIPSheetData(silentVipSheet);
     
-    Logger.log('Total VIP players before filtering: ' + allVipPlayers.length);
-    Logger.log('Total Silent VIP players before filtering: ' + allSilentVipPlayers.length);
     
     var filteredVipPlayers = filterVIPPlayers(allVipPlayers, filters, vocabulary);
     var filteredSilentVipPlayers = filterVIPPlayers(allSilentVipPlayers, filters, vocabulary);
     
-    Logger.log('Filtered VIP players: ' + filteredVipPlayers.length);
-    Logger.log('Filtered Silent VIP players: ' + filteredSilentVipPlayers.length);
     
     var metrics = calculateVIPMetrics(filteredVipPlayers, filteredSilentVipPlayers, vocabulary);
     
@@ -4022,12 +4072,9 @@ function getFilteredVIPDashboardData(filters) {
       appliedFilters: filters
     };
     
-    Logger.log('Filtered data result prepared successfully');
     return result;
     
   } catch (error) {
-    Logger.log('ERROR in getFilteredVIPDashboardData: ' + error.toString());
-    Logger.log('Stack trace: ' + error.stack);
     return {
       error: error.toString()
     };
@@ -4037,9 +4084,6 @@ function getFilteredVIPDashboardData(filters) {
 function filterVIPPlayers(players, filters, vocabulary) {
   if (!filters) return players;
   
-  Logger.log('=== Filtering VIP Players ===');
-  Logger.log('Initial count: ' + players.length);
-  Logger.log('Filters: ' + JSON.stringify(filters));
   
   var filtered = players.filter(function(player) {
     // Manager filter (from tags)
@@ -4115,7 +4159,6 @@ function filterVIPPlayers(players, filters, vocabulary) {
     return true;
   });
   
-  Logger.log('Filtered count: ' + filtered.length);
   return filtered;
 }
 
@@ -4182,20 +4225,15 @@ function getVIPTabsConfig() {
       }
     });
     
-    Logger.log('=== VIP Tabs Config ===');
-    Logger.log('Found ' + Object.keys(groups).length + ' tab groups');
     
     Object.keys(groups).forEach(function(prefix) {
-      Logger.log('Group "' + prefix + '": ' + groups[prefix].sheets.length + ' sheets');
       groups[prefix].sheets.forEach(function(s) {
-        Logger.log('  - ' + s.fullName);
       });
     });
     
     return groups;
     
   } catch (error) {
-    Logger.log('ERROR in getVIPTabsConfig: ' + error.toString());
     return {};
   }
 }
@@ -4221,13 +4259,10 @@ function getUnifiedDashboardData() {
     var dashSheet = ss.getSheetByName('GENERAL DASHBOARD');
     
     if (!dashSheet) {
-      Logger.log('GENERAL DASHBOARD sheet not found, falling back to prefix system');
       return getUnifiedFromPrefixSystem();
     }
     
-    Logger.log('=== Reading GENERAL DASHBOARD sheet ===');
     var allPlayers = getVIPSheetData(dashSheet);
-    Logger.log('Total players in GENERAL DASHBOARD: ' + allPlayers.length);
     
     var vocabulary = getVocabulary();
     var managerResult = getManagerMapping();
@@ -4235,7 +4270,6 @@ function getUnifiedDashboardData() {
     var typeMappingResult = getTypeMapping();
     var tagToType = typeMappingResult.tagToType;
     
-    Logger.log('TYPE mapping: ' + Object.keys(tagToType).length + ' tags → ' + Object.keys(typeMappingResult.typeMapping).length + ' types');
     
     // Determine type for each player from tags using TYPE sheet
     var typeGroups = {};
@@ -4250,7 +4284,6 @@ function getUnifiedDashboardData() {
     });
     
     var typeNames = Object.keys(typeGroups).sort();
-    Logger.log('Detected types: ' + typeNames.join(', '));
     
     // Build result for each type
     var typesData = {};
@@ -4282,12 +4315,10 @@ function getUnifiedDashboardData() {
     try {
       finalResult = JSON.parse(JSON.stringify(finalResult));
     } catch (e) {
-      Logger.log('Sanitize failed: ' + e);
     }
     return finalResult;
     
   } catch (error) {
-    Logger.log('ERROR in getUnifiedDashboardData: ' + error.toString());
     return { error: error.toString() };
   }
 }
@@ -4375,7 +4406,14 @@ function detectPlayerType(tags, tagToType) {
   for (var k = 0; k < tags.length; k++) {
     var t = String(tags[k]).toLowerCase().trim();
     if (!t) continue;
-    if (t.indexOf('churn') !== -1)   return { type: 'CHURN VIP',      subType: 'CHURN VIP' };
+    if (t.indexOf('churn') !== -1 || t.indexOf('closed') !== -1) {
+      var isSl = (t.indexOf('sl_') !== -1 || t.indexOf('_sl') !== -1 || t.indexOf('sl ') !== -1);
+      var isClosed = (t.indexOf('closed') !== -1);
+      if (isSl && isClosed) return { type: 'SL CHURN CLOSED', subType: 'SL CHURN CLOSED' };
+      if (isClosed)         return { type: 'CHURN CLOSED',    subType: 'CHURN CLOSED' };
+      if (isSl)             return { type: 'SL CHURN',        subType: 'SL CHURN' };
+      return { type: 'CHURN VIP', subType: 'CHURN VIP' };
+    }
     if (t.indexOf('pre_vip') !== -1 || t.indexOf('pre-vip') !== -1 || t.indexOf('previp') !== -1) return { type: 'PRE-VIP', subType: 'PRE-VIP' };
     if (t === 'silent' || t.indexOf('silent') !== -1)  return { type: 'SILENT VIP',     subType: 'SILENT VIP' };
     if (t.indexOf('vip') !== -1)     return { type: 'VIP',            subType: 'VIP' };
@@ -4422,7 +4460,6 @@ function getVIPGroupData(groupId) {
       allPlayers = allPlayers.concat(players);
     });
     
-    Logger.log('getVIPGroupData(' + groupId + '): ' + allPlayers.length + ' total players');
     
     // Get vocabulary
     var vocabulary = getVocabulary();
@@ -4444,7 +4481,6 @@ function getVIPGroupData(groupId) {
       }
     });
     
-    Logger.log('Players split: VIP=' + vipPlayers.length + ', Silent/Pre=' + silentVipPlayers.length);
     
     // Calculate metrics
     var metrics = calculateVIPMetrics(vipPlayers, silentVipPlayers, vocabulary);
@@ -4468,7 +4504,6 @@ function getVIPGroupData(groupId) {
     };
     
   } catch (error) {
-    Logger.log('ERROR in getVIPGroupData: ' + error.toString());
     return { error: error.toString() };
   }
 }
@@ -4481,17 +4516,14 @@ function getVIPFilterOptions() {
     // 1. Try DASHBOARD sheet first
     var dashSheet = ss.getSheetByName('GENERAL DASHBOARD');
     if (dashSheet) {
-      Logger.log('=== VIP Filter Options (GENERAL DASHBOARD sheet) ===');
       allPlayers = getVIPSheetData(dashSheet);
     } else {
       // 2. Try dynamic prefix system
       var groupData = getVIPGroupData('vip_dashboard');
       if (groupData && !groupData.error && groupData.players) {
-        Logger.log('=== VIP Filter Options (Dynamic System) ===');
         allPlayers = groupData.players;
       } else {
         // 3. Legacy system
-        Logger.log('=== VIP Filter Options (Legacy System) ===');
         var vipSheet = ss.getSheetByName('VIP');
         var silentVipSheet = ss.getSheetByName('SILENT VIP');
         if (vipSheet) allPlayers = allPlayers.concat(getVIPSheetData(vipSheet));
@@ -4499,15 +4531,12 @@ function getVIPFilterOptions() {
       }
     }
     
-    Logger.log('Total players for filters: ' + allPlayers.length);
     
     // Get mappings from MANAGER sheet and General Info
     var managerResult = getManagerMapping();
     var managerMapping = managerResult.tagToManager || {}; // ✅ flat {tag: manager}
     var trafficMapping = getTrafficTypeMapping();
     
-    Logger.log('Manager mapping size: ' + Object.keys(managerMapping).length);
-    Logger.log('Traffic mapping size: ' + Object.keys(trafficMapping).length);
     
     var managers = {};
     var trafficTypes = {};
@@ -4547,13 +4576,10 @@ function getVIPFilterOptions() {
       }
     });
     
-    Logger.log('Players with managers: ' + playersWithManagers + ' / ' + allPlayers.length);
     
     var managersList = Object.keys(managers).sort();
     var trafficTypesList = Object.keys(trafficTypes).sort();
     
-    Logger.log('Managers: ' + managersList.join(', '));
-    Logger.log('Traffic types: ' + trafficTypesList.join(', '));
     
     // Flatten trafficMapping for frontend compatibility (stag -> type string)
     var flatTrafficMapping = {};
@@ -4571,7 +4597,6 @@ function getVIPFilterOptions() {
     };
     
   } catch (error) {
-    Logger.log('ERROR in getVIPFilterOptions: ' + error.toString());
     return { error: error.toString() };
   }
 }
@@ -4607,13 +4632,11 @@ function createExportSheet(sheetName, data) {
       // Add filters
       sheet.getRange(1, 1, data.length, data[0].length).createFilter();
       
-      Logger.log('Created export sheet: ' + ss.getUrl());
     }
     
     return ss.getUrl();
     
   } catch (error) {
-    Logger.log('ERROR in createExportSheet: ' + error.toString());
     throw new Error('Failed to create export sheet: ' + error.message);
   }
 }
@@ -4678,7 +4701,11 @@ function savePlayerContactHistory(email, history) {
     var lastDate = history && history.length ? history[0] : '';
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     var sheet = ss.getSheetByName('PLAYER_CONTACTS');
-    if (!sheet) return { error: 'Sheet not found' };
+    if (!sheet) {
+      sheet = ss.insertSheet('PLAYER_CONTACTS');
+      sheet.getRange(1,1,1,3).setValues([['Email','LastDate','History']]);
+      sheet.getRange(1,1,1,3).setFontWeight('bold').setBackground('#667eea').setFontColor('#fff');
+    }
     var data = sheet.getDataRange().getValues();
     for (var i = 1; i < data.length; i++) {
       if (String(data[i][0] || '').trim().toLowerCase() === email) {
@@ -4687,7 +4714,9 @@ function savePlayerContactHistory(email, history) {
         return { success: true };
       }
     }
-    return { error: 'Not found' };
+    // Not found → create the row (first contact for this player)
+    sheet.appendRow([email, lastDate, JSON.stringify(history || [])]);
+    return { success: true, created: true };
   } catch(e) { return { error: e.message }; }
 }
 
@@ -4744,24 +4773,20 @@ function getPlayerProfilingData() {
   try {
     var ss = SpreadsheetApp.getActiveSpreadsheet();
     
-    Logger.log('=== getPlayerProfilingData START ===');
     
     // ✅ Read configured sheet (PROFILING by default, GENERAL DASHBOARD after migration)
     var sheetName = PropertiesService.getDocumentProperties().getProperty('PROFILING_SHEET_NAME') || 'PROFILING';
     var sheet = ss.getSheetByName(sheetName) || ss.getSheetByName('[' + sheetName + ']') || ss.getSheetByName('PROFILING');
     
     if (!sheet) {
-      Logger.log('ERROR: profiling sheet not found (' + sheetName + ')');
       output.error = sheetName + ' sheet not found';
       return output;
     }
-    Logger.log('Reading from sheet: ' + sheet.getName());
     
     var allData = sheet.getDataRange().getValues();
     
     if (allData.length < 2) {
       output.success = true;
-      Logger.log('PROFILING sheet is empty');
       return output;
     }
     
@@ -4776,7 +4801,6 @@ function getPlayerProfilingData() {
     }
     
     if (emailColumnIndex === -1) {
-      Logger.log('WARNING: No email column in profiling sheet');
       output.error = 'No email column found';
       return output;
     }
@@ -4865,7 +4889,6 @@ function getPlayerProfilingData() {
       output.players.push(playerObject);
     }
     
-    Logger.log('PROFILING: ' + output.players.length + ' players loaded');
     
         // ✅ Load MANAGER mapping
     var mgrResult = getManagerMapping();
@@ -4916,7 +4939,6 @@ function getPlayerProfilingData() {
           dataValidations = sheet.getRange(2, 1, 1, sheet.getLastColumn()).getDataValidations()[0];
         }
       } catch(dvErr) {
-        Logger.log('Warning: Could not read data validations: ' + dvErr);
       }
       
       // Whitelist disabled — admin's "Non Visible fields" section handles hiding now.
@@ -5071,16 +5093,12 @@ function getPlayerProfilingData() {
       output.fieldConfig._order = order;
       output.fieldConfig._sections = sections;
       
-      Logger.log('fieldConfig built: ' + order.length + ' fields, ' + Object.keys(sections).length + ' sections');
 
       // ★ Apply admin-panel overrides (custom labels, types, sections, options, defaults, etc.)
       try { _applyProfilingOverrides(output.fieldConfig); } catch(ovErr) { Logger.log('Override apply err: ' + ovErr); }
     }
     
-    Logger.log('=== getPlayerProfilingData END: ' + output.players.length + ' players ===');
   } catch (mainError) {
-    Logger.log('ERROR in getPlayerProfilingData: ' + mainError.toString());
-    Logger.log('Stack: ' + (mainError.stack || 'no stack'));
     output.error = mainError.toString();
   }
   
@@ -5104,7 +5122,6 @@ function updatePlayerProfiling(data) {
   
   var headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0];
   
-  Logger.log('updatePlayerProfiling: row=' + rowIndex + ', sheet=' + configuredSheet);
   
   // Virtual "name" handling — if incoming has "name" but sheet uses first_name/last_name,
   // split it on the first space.
@@ -5119,7 +5136,6 @@ function updatePlayerProfiling(data) {
     var lnVal = (spaceIdx === -1) ? '' : nameValue.substring(spaceIdx + 1).trim();
     data.first_name = fnVal;
     data.last_name = lnVal;
-    Logger.log('Split virtual name "' + nameValue + '" → first="' + fnVal + '", last="' + lnVal + '"');
   }
   
   var written = 0;
@@ -5172,7 +5188,6 @@ function updatePlayerProfiling(data) {
   }
   
   if (changedCols.length === 0) {
-    Logger.log('✅ No changes to write for row ' + rowIndex);
     return { success: true, row: rowIndex, written: 0, skipped: [] };
   }
   
@@ -5180,11 +5195,9 @@ function updatePlayerProfiling(data) {
   try {
     rowRange.setValues([newRow]);
     written = changedCols.length;
-    Logger.log('✅ Batch write success: row ' + rowIndex + ' (' + written + ' fields)');
   } catch (batchErr) {
     // SLOW FALLBACK — at least one cell has data validation. Write changed cells one
     // by one, bypassing validation only on the cells that need it.
-    Logger.log('⚠ Batch write failed (' + batchErr + ') — falling back to per-cell');
     changedCols.forEach(function(ch) {
       try {
         var cell = sheet.getRange(rowIndex, ch.c + 1);
@@ -5201,20 +5214,16 @@ function updatePlayerProfiling(data) {
               catch (restoreErr) { /* keep value, drop rule */ }
             }
             written++;
-            Logger.log('⚠️ Bypassed validation for "' + ch.header + '" = "' + ch.value + '"');
           } catch (e2) {
-            Logger.log('❌ Could not write "' + ch.header + '": ' + e2);
             skipped.push(ch.header);
           }
         }
       } catch (cellErr) {
-        Logger.log('❌ Skipped "' + ch.header + '": ' + cellErr);
         skipped.push(ch.header);
       }
     });
   }
   
-  Logger.log('✅ Player updated at row ' + rowIndex + ' | written=' + written + ' skipped=' + skipped.length);
   return { success: true, row: rowIndex, written: written, skipped: skipped };
 }
 
@@ -5249,7 +5258,6 @@ function deletePlayer(playerEmail) {
     var cellEmail = String(allData[r][emailCol] || '').toLowerCase().trim();
     if (cellEmail === targetEmail) {
       sheet.deleteRow(r + 1); // +1 because getValues is 0-based, deleteRow is 1-based
-      Logger.log('✅ Deleted player "' + playerEmail + '" from row ' + (r + 1));
       return { success: true, email: playerEmail, row: r + 1 };
     }
   }
@@ -5279,7 +5287,6 @@ function getAttentionRules() {
     var msgCol = headers.indexOf('message');
     
     if (errorCol === -1 || tagsCol === -1 || msgCol === -1) {
-      Logger.log('ATTENTION: Missing required columns (error/tags/message)');
       return rules;
     }
     
@@ -5315,9 +5322,7 @@ function getAttentionRules() {
       });
     }
     
-    Logger.log('ATTENTION: loaded ' + rules.length + ' rules');
   } catch(e) {
-    Logger.log('ATTENTION error: ' + e.toString());
   }
   return rules;
 }
@@ -5483,7 +5488,6 @@ function getConfig() {
     
     return { casino: casino, sport: sport, rtpGames: rtpGames };
   } catch (e) {
-    Logger.log('Config error: ' + e.message);
     return { casino: [], sport: [], rtpGames: [] };
   }
 }
@@ -5577,7 +5581,6 @@ function getFields(sheetName) {
     try { userCache.put(cacheKey, JSON.stringify(fields2), 60); } catch (e) {}
     return fields2;
   } catch (e) {
-    Logger.log('getFields error: ' + e.message);
     return [];
   }
 }
@@ -5604,7 +5607,6 @@ function getPlayerPreferences(email) {
     }
     return null;
   } catch (e) {
-    Logger.log('Error loading player preferences: ' + e.message);
     return null;
   }
 }
@@ -5625,13 +5627,10 @@ function setZerosInSheet(sheetName, allInputFields) {
     if (!sheet) return { success: false, error: 'Sheet not found' };
     if (!allInputFields || allInputFields.length === 0) return { success: false, error: 'No input fields' };
     
-    for (var i = 0; i < allInputFields.length; i++) {
-      sheet.getRange(allInputFields[i]).setValue(0);
-    }
+    sheet.getRangeList(allInputFields).setValue(0);
     SpreadsheetApp.flush();
     return { success: true };
   } catch (e) {
-    Logger.log('Error setting zeros: ' + e.message);
     return { success: false, error: e.message };
   }
 }
@@ -5691,7 +5690,6 @@ function getRTPGames() {
     }
     return games;
   } catch (e) {
-    Logger.log('Error loading RTP games: ' + e.message);
     return [];
   }
 }
@@ -5867,7 +5865,6 @@ function getPlayerFavouriteSlots(email) {
     }
     return [];
   } catch (e) {
-    Logger.log('getPlayerFavouriteSlots error: ' + e.message);
     return [];
   }
 }
@@ -6005,7 +6002,6 @@ function getHomeData() {
       links: parseLinks(linksCol)
     };
   } catch (e) {
-    Logger.log('getHomeData error: ' + e);
     return { error: e.message };
   }
 }
@@ -6040,7 +6036,6 @@ function onHomeEdit(e) {
       e.range.setNote(now + '|' + authorName);
     }
   } catch(err) {
-    Logger.log('onHomeEdit error: ' + err);
   }
 }
 
@@ -6077,7 +6072,6 @@ function setupHomeTrigger() {
   ScriptApp.newTrigger('onHomeEdit')
     .forSpreadsheet(SpreadsheetApp.getActiveSpreadsheet())
     .onEdit().create();
-  Logger.log('HOME auto-stamp trigger installed');
 }
 
 /** Backfill notes on existing HOME entries */
@@ -6122,10 +6116,8 @@ function getCryptoAndForexRates() {
       result.rates['ETH'] = 1 / ethPrice;
     }
     
-    Logger.log('Rates loaded via Google Finance: BTC=' + btcPrice + ', ETH=' + ethPrice + ', USD=' + result.rates['USD']);
     
   } catch (e) {
-    Logger.log('Google Finance error: ' + e);
   }
   
   // Fallback to CoinGecko for crypto if Google Finance failed
@@ -6239,7 +6231,6 @@ function getUpcomingBirthdays() {
     return { birthdays: results.slice(0, 30) }; // top 30 upcoming
     
   } catch (e) {
-    Logger.log('getUpcomingBirthdays error: ' + e);
     return { birthdays: [], error: e.message };
   }
 }
@@ -6312,7 +6303,6 @@ function getPromoPlan() {
     return { events: events };
     
   } catch (e) {
-    Logger.log('getPromoPlan error: ' + e);
     return { events: [], error: e.message };
   }
 }
@@ -6474,7 +6464,6 @@ function initPromoPlanSheet() {
     .build();
   sheet.getRange(2, 3, 200, 1).setDataValidation(typeRule);
   
-  Logger.log('PROMO_PLAN sheet created with ' + holidays.length + ' events');
 }
 
 // ==========================================
@@ -6556,6 +6545,7 @@ function getBonusCategories() {
     }
     
     var data = sheet.getDataRange().getValues();
+    if (!data || data.length < 2) return { mapping: {}, categoryOptions: [] };
     var mapping = {};
     var categoryOptions = [];
     
@@ -6686,6 +6676,51 @@ function syncBonusNames(names) {
 // ==========================================
 // PAYMENTS ANALYTICS
 // ==========================================
+
+// Admin: replace the entire PAYMENTS sheet with uploaded CSV content
+function replacePaymentsSheet(csvText) {
+  try {
+    if (!csvText || !String(csvText).trim()) return { error: 'Empty CSV' };
+    // Detect delimiter from the first line (comma vs semicolon)
+    var firstLine = String(csvText).split(/\r?\n/)[0] || '';
+    var commas = (firstLine.match(/,/g) || []).length;
+    var semis  = (firstLine.match(/;/g) || []).length;
+    var delim = semis > commas ? ';' : ',';
+    var rows = Utilities.parseCsv(csvText, delim);
+    if (!rows || !rows.length) return { error: 'No rows parsed' };
+    // Drop fully-empty trailing rows
+    rows = rows.filter(function(r){ return r && (r.length > 1 || String(r[0] || '').trim() !== ''); });
+    if (!rows.length) return { error: 'No data rows' };
+    // Normalize to a rectangular matrix
+    var maxC = 0;
+    rows.forEach(function(r){ if (r.length > maxC) maxC = r.length; });
+    // Trim trailing fully-empty columns (CSV exports often add them)
+    var lastCol = 0;
+    rows.forEach(function(r){
+      for (var c = Math.min(r.length, maxC) - 1; c >= 0; c--) {
+        if (String(r[c] == null ? '' : r[c]).trim() !== '') { if (c + 1 > lastCol) lastCol = c + 1; break; }
+      }
+    });
+    if (lastCol > 0) maxC = lastCol;
+    if (maxC < 1) maxC = 1;
+    rows = rows.map(function(r){ var rr = r.slice(0, maxC); while (rr.length < maxC) rr.push(''); return rr; });
+
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('PAYMENTS');
+    if (!sheet) sheet = ss.insertSheet('PAYMENTS');
+    // Shrink the sheet to 1x1 FIRST to free workbook cells, then allocate the exact size needed.
+    // This prevents "exceeds max cells" errors when setValues would otherwise auto-expand the grid.
+    sheet.clearContents();
+    var mr = sheet.getMaxRows(), mc = sheet.getMaxColumns();
+    if (mr > 1) sheet.deleteRows(2, mr - 1);
+    if (mc > 1) sheet.deleteColumns(2, mc - 1);
+    if (rows.length > 1) sheet.insertRowsAfter(1, rows.length - 1);
+    if (maxC > 1) sheet.insertColumnsAfter(1, maxC - 1);
+    sheet.getRange(1, 1, rows.length, maxC).setValues(rows);
+    SpreadsheetApp.flush();
+    return { success: true, rows: Math.max(0, rows.length - 1), cols: maxC };
+  } catch(e) { return { error: e.message }; }
+}
 
 function getPaymentsData() {
   try {
@@ -6819,13 +6854,14 @@ function getPlayerLists() {
     
     var headers = data[0].map(function(h) { return String(h).trim().toLowerCase(); });
     
-    // Migration: add status column if missing
-    if (headers.indexOf('status') === -1) {
-      var lastCol = headers.length + 1;
-      sheet.getRange(1, lastCol).setValue('status');
-      sheet.getRange(1, lastCol).setFontWeight('bold');
-      headers.push('status');
-    }
+    // Migration: ensure status/assignee/deadline columns exist
+    ['status','assignee','deadline'].forEach(function(col) {
+      if (headers.indexOf(col) === -1) {
+        var lastCol = headers.length + 1;
+        sheet.getRange(1, lastCol).setValue(col).setFontWeight('bold');
+        headers.push(col);
+      }
+    });
     
     var ci = function(name) {
       for (var i = 0; i < headers.length; i++) {
@@ -6840,6 +6876,8 @@ function getPlayerLists() {
     var cPriority = ci('priority');
     var cNotes = ci('notes');
     var cStatus = ci('status');
+    var cAssignee = ci('assignee');
+    var cDeadline = ci('deadline');
     var cCreated = ci('created');
     var cUpdated = ci('updated');
     
@@ -6860,6 +6898,8 @@ function getPlayerLists() {
         priority: cPriority >= 0 ? String(row[cPriority] || 'medium') : 'medium',
         notes: cNotes >= 0 ? String(row[cNotes] || '') : '',
         status: cStatus >= 0 ? String(row[cStatus] || 'backlog') : 'backlog',
+        assignee: cAssignee >= 0 ? String(row[cAssignee] || '') : '',
+        deadline: cDeadline >= 0 ? String(row[cDeadline] || '') : '',
         created: cCreated >= 0 ? String(row[cCreated] || '') : '',
         updated: cUpdated >= 0 ? String(row[cUpdated] || '') : '',
         rowIndex: i + 1
@@ -6919,13 +6959,18 @@ function deletePlayerList(id) {
 // New API wrappers for Lists
 function saveList(data) {
   var prioMap = { 1: 'high', 2: 'high', 3: 'medium', 4: 'low', 5: 'low' };
-  return savePlayerList({
+  var res = savePlayerList({
     name: data.name || 'Untitled',
     players: data.players || [],
     priority: prioMap[data.priority] || 'medium',
     notes: data.comments || '',
     status: data.status || 'backlog'
   });
+  // Persist assignee/deadline (columns auto-created by updateList)
+  if (res && res.id && (data.assignee || data.deadline)) {
+    try { updateList(res.id, { assignee: data.assignee || '', deadline: data.deadline || '' }); } catch(e) {}
+  }
+  return res;
 }
 
 function updateList(listId, updates) {
@@ -6956,6 +7001,16 @@ function updateList(listId, updates) {
           var statusCol = headers.indexOf('status');
           if (statusCol !== -1) sheet.getRange(row, statusCol + 1).setValue(updates.status);
         }
+        if (updates.assignee !== undefined) {
+          var aCol = headers.indexOf('assignee');
+          if (aCol === -1) { aCol = headers.length; sheet.getRange(1, aCol + 1).setValue('assignee').setFontWeight('bold'); headers.push('assignee'); }
+          sheet.getRange(row, aCol + 1).setValue(updates.assignee);
+        }
+        if (updates.deadline !== undefined) {
+          var dCol = headers.indexOf('deadline');
+          if (dCol === -1) { dCol = headers.length; sheet.getRange(1, dCol + 1).setValue('deadline').setFontWeight('bold'); headers.push('deadline'); }
+          sheet.getRange(row, dCol + 1).setValue(updates.deadline);
+        }
         var updCol = headers.indexOf('updated');
         if (updCol !== -1) sheet.getRange(row, updCol + 1).setValue(new Date());
         return { success: true };
@@ -6968,6 +7023,246 @@ function updateList(listId, updates) {
 }
 
 function deleteList(listId) { return deletePlayerList(listId); }
+
+/******************** WEBHOOK NOTIFICATIONS ********************/
+// Config stored in Script Properties as JSON: { process: { url, enabled } }
+
+function getNotificationConfigs() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('NOTIF_CONFIGS');
+    return { configs: raw ? JSON.parse(raw) : {} };
+  } catch(e) { return { configs: {}, error: e.message }; }
+}
+
+function saveNotificationConfig(process, url, enabled) {
+  try {
+    if (!process) return { error: 'No process' };
+    var p = PropertiesService.getScriptProperties();
+    var raw = p.getProperty('NOTIF_CONFIGS');
+    var cfg = raw ? JSON.parse(raw) : {};
+    cfg[process] = { url: String(url || '').trim(), enabled: !!enabled };
+    p.setProperty('NOTIF_CONFIGS', JSON.stringify(cfg));
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+// Fired when a list is assigned to a manager.
+// clientPayload (optional) carries clean values from the UI (correct priority label, ISO deadline).
+function triggerListNotification(listId, clientPayload) {
+  try {
+    var cfg = (getNotificationConfigs().configs || {})['lists_management'];
+    if (!cfg || !cfg.enabled || !cfg.url) return { skipped: true, reason: 'not configured' };
+
+    var payload;
+    if (clientPayload && typeof clientPayload === 'object') {
+      payload = {
+        notification_type: 'lists_management',
+        list_name: String(clientPayload.list_name || ''),
+        assignee: String(clientPayload.assignee || ''),
+        assignee_slack: String(clientPayload.assignee_slack || ''),
+        deadline: String(clientPayload.deadline || ''),
+        status: String(clientPayload.status || ''),
+        priority: String(clientPayload.priority || ''),
+        comments: String(clientPayload.comments || '')
+      };
+    } else {
+      // Fallback: read from the sheet
+      var lists = getPlayerLists().lists || [];
+      var list = null;
+      for (var i = 0; i < lists.length; i++) { if (lists[i].id === listId) { list = lists[i]; break; } }
+      if (!list) return { error: 'List not found' };
+      var prio = String(list.priority || '');
+      if (prio.charAt(0) === '[' || prio.charAt(0) === '{') prio = ''; // guard corrupted data
+      payload = {
+        notification_type: 'lists_management',
+        list_name: list.name || '',
+        assignee: list.assignee || '',
+        assignee_slack: '',
+        deadline: list.deadline || '',
+        status: list.status || '',
+        priority: prio,
+        comments: list.notes || ''
+      };
+    }
+
+    var resp = UrlFetchApp.fetch(cfg.url, {
+      method: 'post',
+      contentType: 'application/json',
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    var code = resp.getResponseCode();
+    return (code >= 200 && code < 300) ? { success: true, code: code } : { error: 'HTTP ' + code };
+  } catch(e) { return { error: e.message }; }
+}
+
+/******************** COMMUNICATION HISTORY ********************/
+function getChurnConfig() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('CHURN_CONFIG');
+    var cfg = raw ? JSON.parse(raw) : {};
+    if (!cfg.thresholds || !cfg.thresholds.length) cfg.thresholds = [3, 7, 14, 21, 30];
+    if (!cfg.tab2Days) cfg.tab2Days = 30;
+    return { config: cfg };
+  } catch(e) { return { config: { thresholds: [3, 7, 14, 21, 30], tab2Days: 30 }, error: e.message }; }
+}
+
+function saveChurnConfig(cfg) {
+  try {
+    cfg = cfg || {};
+    var thresholds = (cfg.thresholds || []).map(function(x){ return parseInt(x, 10); }).filter(function(x){ return !isNaN(x) && x > 0; });
+    thresholds = thresholds.filter(function(v, i){ return thresholds.indexOf(v) === i; }).sort(function(a, b){ return a - b; });
+    if (!thresholds.length) thresholds = [3, 7, 14, 21, 30];
+    var tab2 = parseInt(cfg.tab2Days, 10);
+    if (isNaN(tab2) || tab2 < 1) tab2 = 30;
+    var out = { thresholds: thresholds, tab2Days: tab2 };
+    PropertiesService.getScriptProperties().setProperty('CHURN_CONFIG', JSON.stringify(out));
+    return { success: true, config: out };
+  } catch(e) { return { error: e.message }; }
+}
+
+function _ensureCustDevSheet() {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var sh = ss.getSheetByName('CUSTDEV');
+  if (!sh) {
+    sh = ss.insertSheet('CUSTDEV');
+    sh.appendRow(['id', 'name', 'createdAt', 'createdBy', 'dateFrom', 'dateTo', 'questions', 'players']);
+  }
+  return sh;
+}
+
+function getCustDevs() {
+  try {
+    var sh = _ensureCustDevSheet();
+    var data = sh.getDataRange().getValues();
+    if (!data || data.length < 2) return { success: true, campaigns: [] };
+    var out = [];
+    for (var i = 1; i < data.length; i++) {
+      var r = data[i];
+      if (!r[0]) continue;
+      var questions = []; var players = [];
+      try { questions = r[6] ? JSON.parse(r[6]) : []; } catch(e) {}
+      try { players = r[7] ? JSON.parse(r[7]) : []; } catch(e) {}
+      out.push({ id: String(r[0]), name: String(r[1] || ''), createdAt: String(r[2] || ''), createdBy: String(r[3] || ''), dateFrom: String(r[4] || ''), dateTo: String(r[5] || ''), questions: questions, players: players });
+    }
+    return { success: true, campaigns: out };
+  } catch(e) { return { success: false, error: e.message, campaigns: [] }; }
+}
+
+function saveCustDev(c) {
+  try {
+    c = c || {};
+    var sh = _ensureCustDevSheet();
+    var data = sh.getDataRange().getValues();
+    var id = c.id ? String(c.id) : ('cd_' + Date.now() + '_' + Math.floor(Math.random() * 1000));
+    var row = [
+      id,
+      String(c.name || ''),
+      c.createdAt || new Date().toISOString(),
+      String(c.createdBy || ''),
+      String(c.dateFrom || ''),
+      String(c.dateTo || ''),
+      JSON.stringify(c.questions || []),
+      JSON.stringify(c.players || [])
+    ];
+    var found = -1;
+    for (var i = 1; i < data.length; i++) { if (String(data[i][0]) === id) { found = i + 1; break; } }
+    if (found > 0) sh.getRange(found, 1, 1, row.length).setValues([row]);
+    else sh.appendRow(row);
+    return { success: true, id: id };
+  } catch(e) { return { success: false, error: e.message }; }
+}
+
+function deleteCustDev(id) {
+  try {
+    var sh = _ensureCustDevSheet();
+    var data = sh.getDataRange().getValues();
+    for (var i = 1; i < data.length; i++) { if (String(data[i][0]) === String(id)) { sh.deleteRow(i + 1); return { success: true }; } }
+    return { success: false, error: 'not found' };
+  } catch(e) { return { success: false, error: e.message }; }
+}
+
+function getStagDirectory() {
+  try {
+    try { var _sgh = CacheService.getScriptCache().get('cache_stagdir_v1'); if (_sgh) return JSON.parse(_sgh); } catch (e) {}
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('GENERAL INFO');
+    if (!sheet) return {};
+    var data = sheet.getDataRange().getValues();
+    if (!data || data.length < 2) return {};
+    var map = {};
+    for (var i = 1; i < data.length; i++) {
+      var stag = String(data[i][1] == null ? '' : data[i][1]).trim();
+      if (!stag) continue;
+      map[stag] = {
+        brand: String(data[i][0] == null ? '' : data[i][0]).trim(),
+        type: String(data[i][2] == null ? '' : data[i][2]).trim(),
+        direction: String(data[i][3] == null ? '' : data[i][3]).trim(),
+        source: String(data[i][4] == null ? '' : data[i][4]).trim()
+      };
+    }
+    try { var _sd = JSON.stringify(map); if (_sd.length < 95000) CacheService.getScriptCache().put('cache_stagdir_v1', _sd, 300); } catch (e) {}
+    return map;
+  } catch(e) { return {}; }
+}
+
+function getGroupNames() {
+  try {
+    var raw = PropertiesService.getScriptProperties().getProperty('GROUP_NAMES');
+    return raw ? JSON.parse(raw) : {};
+  } catch(e) { return {}; }
+}
+
+function saveGroupNames(map) {
+  try {
+    map = map || {};
+    var clean = {};
+    Object.keys(map).forEach(function(k) {
+      var code = String(k).trim();
+      var name = String(map[k] == null ? '' : map[k]).trim();
+      if (code && name) clean[code] = name;
+    });
+    PropertiesService.getScriptProperties().setProperty('GROUP_NAMES', JSON.stringify(clean));
+    return { success: true, count: Object.keys(clean).length };
+  } catch(e) { return { error: e.message }; }
+}
+
+function logCommunication(entry) {
+  try {
+    entry = entry || {};
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('COMM_HISTORY');
+    if (!sheet) {
+      sheet = ss.insertSheet('COMM_HISTORY');
+      sheet.getRange(1, 1, 1, 6).setValues([['Timestamp', 'Type', 'Sender', 'Recipient', 'Locale', 'Text']]);
+      sheet.getRange(1, 1, 1, 6).setFontWeight('bold').setBackground('#667eea').setFontColor('#fff');
+    }
+    sheet.appendRow([new Date(), String(entry.type || ''), String(entry.sender || ''), String(entry.recipient || ''), String(entry.locale || ''), String(entry.text || '')]);
+    return { success: true };
+  } catch(e) { return { error: e.message }; }
+}
+
+function getCommunicationHistory(limit) {
+  try {
+    limit = limit || 200;
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var sheet = ss.getSheetByName('COMM_HISTORY');
+    if (!sheet) return { rows: [] };
+    var data = sheet.getDataRange().getValues();
+    if (data.length < 2) return { rows: [] };
+    var rows = [];
+    for (var i = data.length - 1; i >= 1 && rows.length < limit; i--) {
+      var r = data[i];
+      var ts = r[0];
+      rows.push({
+        timestamp: (ts instanceof Date) ? ts.toISOString() : String(ts || ''),
+        type: String(r[1] || ''), sender: String(r[2] || ''),
+        recipient: String(r[3] || ''), locale: String(r[4] || ''), text: String(r[5] || '')
+      });
+    }
+    return { rows: rows };
+  } catch(e) { return { rows: [], error: e.message }; }
+}
 
 /******************** CLOSURE ANALYTICS ********************/
 
@@ -7059,11 +7354,9 @@ function getClosureEnrichment() {
       }
     }
     
-    Logger.log('Closure enrichment: ' + Object.keys(result.reasons).length + ' reasons, ' + Object.keys(result.manualData).length + ' manual, ' + result.appUsers.length + ' users');
     return result;
     
   } catch (e) {
-    Logger.log('ERROR in getClosureEnrichment: ' + e.toString());
     return { reasons: {}, manualData: {}, appUsers: [], error: e.toString() };
   }
 }
@@ -7160,7 +7453,6 @@ function saveClosureReason(params) {
       profSheet.getRange(1, lastCol).setValue('Closure Reason');
       profSheet.getRange(1, lastCol).setFontWeight('bold');
       reasonIdx = lastCol - 1;
-      Logger.log('Created Closure Reason column at index ' + reasonIdx);
     }
     
     // Find player row by email
@@ -7168,7 +7460,6 @@ function saveClosureReason(params) {
     for (var r = 1; r < profData.length; r++) {
       if (String(profData[r][emailIdx] || '').trim().toLowerCase() === emailLower) {
         profSheet.getRange(r + 1, reasonIdx + 1).setValue(reason);
-        Logger.log('Updated closure reason for ' + email + ': ' + reason);
         return { success: true };
       }
     }
@@ -7380,9 +7671,8 @@ function savePaymentMethods(methods) {
       return mc;
     });
     if (sheet.getLastRow() > 1) sheet.getRange(2,1,sheet.getLastRow()-1,1).clearContent();
-    clean.forEach(function(m, i) {
-      sheet.getRange(i+2, 1).setValue(JSON.stringify(m));
-    });
+    var _mRows = clean.map(function(m) { return [JSON.stringify(m)]; });
+    if (_mRows.length) sheet.getRange(2, 1, _mRows.length, 1).setValues(_mRows);
     return { success: true };
   } catch(e) { return { error: e.toString() }; }
 }
@@ -8044,11 +8334,9 @@ function lockKpiResult(params) {
       else rowMo = String(rowMo || '').trim();
       if (rowMgr === mgr && rowMo === mo) {
         sheet.getRange(i + 1, lockedCol + 1).setValue('TRUE');
-        Logger.log('lockKpiResult: locked row ' + (i+1) + ' mgr=' + mgr + ' mo=' + mo);
         return { success: true };
       }
     }
-    Logger.log('lockKpiResult: NOT FOUND mgr=' + mgr + ' mo=' + mo);
     return { error: 'Result not found' };
   } catch(e) { return { error: e.message }; }
 }
@@ -8123,11 +8411,9 @@ function deleteQaScorecard(params) {
       }
       if (rowMgr === mgr && rowMo === mo) {
         sheet.deleteRow(i + 1);
-        Logger.log('Deleted QA scorecard: ' + mgr + ' ' + mo + ' row ' + (i+1));
         return { success: true };
       }
     }
-    Logger.log('QA scorecard not found: mgr=' + mgr + ' mo=' + mo);
     return { error: 'Scorecard not found' };
   } catch(e) { return { error: e.message }; }
 }
@@ -8209,19 +8495,16 @@ function resolveQaAppeal(params) {
         var fbi = parseInt(data[i][headers.indexOf('bi')]);
         var fei = parseInt(data[i][headers.indexOf('ei')]);
         var ffi = headers.indexOf('fi') >= 0 ? parseInt(data[i][headers.indexOf('fi')]) : -1;
-        Logger.log('resolveQaAppeal: looking for mgr=' + mgr + ' mo=' + mo + ' fi=' + ffi + ' bi=' + fbi + ' ei=' + fei);
         var resSheet = ss.getSheetByName('QA_RESULTS');
         if (resSheet) {
           var rData = resSheet.getDataRange().getValues();
           var rH = rData[0].map(function(h){return String(h).trim().toLowerCase();});
           var rMgr = rH.indexOf('manager'); var rMo = rH.indexOf('month'); var rFj = rH.indexOf('failures_json'); var rSc = rH.indexOf('score');
-          Logger.log('resolveQaAppeal: scanning ' + (rData.length-1) + ' result rows');
           for (var ri = 1; ri < rData.length; ri++) {
             var rRowMo = rData[ri][rMo];
             if (rRowMo instanceof Date) rRowMo = rRowMo.getFullYear() + '-' + String(rRowMo.getMonth()+1).padStart(2,'0');
             else rRowMo = String(rRowMo || '').trim();
             if (String(rData[ri][rMgr]).toLowerCase() === mgr.toLowerCase() && rRowMo === mo) {
-              Logger.log('resolveQaAppeal: found scorecard at row ' + (ri+1));
               var failures = []; try { failures = JSON.parse(String(rData[ri][rFj] || '[]')); } catch(e){}
               var matched = false;
               for (var fi = 0; fi < failures.length; fi++) {
@@ -8229,7 +8512,6 @@ function resolveQaAppeal(params) {
                 var isMatch = (ffi >= 0) ? (fi === ffi) : (parseInt(failures[fi].bi) === fbi && parseInt(failures[fi].ei) === fei);
                 if (isMatch) {
                   matched = true;
-                  Logger.log('resolveQaAppeal: matched failure fi=' + fi + ' status=' + params.status);
                   if (params.status === 'accepted') {
                     failures[fi].original_pct = failures[fi].pct;
                     failures[fi].pct = 0;
@@ -8255,7 +8537,6 @@ function resolveQaAppeal(params) {
               var totalDeduct = 0;
               failures.forEach(function(f) { if (f.level !== 'warning') totalDeduct += parseFloat(f.pct) || 0; });
               var newScore = Math.max(0, 100 - totalDeduct);
-              Logger.log('resolveQaAppeal: new score=' + newScore + ' deducted=' + totalDeduct);
               resSheet.getRange(ri+1, rFj+1).setValue(JSON.stringify(failures));
               resSheet.getRange(ri+1, rSc+1).setValue(newScore);
               break;
@@ -8378,6 +8659,161 @@ function getQualityPdfSentStatus(month) {
       }
     }
     return { success: true, sent: [] };
+  } catch(e) { return { error: e.message }; }
+}
+
+// Send the SAME report PDF to a custom test address (preview only, no status tracking)
+function sendQualityPdfTest(params) {
+  try {
+    var mgrEmail = String(params.manager || '');
+    var testTo = String(params.to || '').trim();
+    var month = String(params.month || '');
+    var htmlContent = String(params.html || '');
+    var subject = String(params.subject || 'Quality Report');
+    var bodyText = String(params.body || '');
+    if (!testTo || !htmlContent) return { error: 'Missing params' };
+    var moNames = ['','January','February','March','April','May','June','July','August','September','October','November','December'];
+    var moParts = month.split('-');
+    var moName = moNames[parseInt(moParts[1]) || 1] || '';
+    var moYear = moParts[0] || '';
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var accessSheet = ss.getSheetByName('ACCESS');
+    var mgrName = mgrEmail.split('@')[0];
+    if (accessSheet && mgrEmail) {
+      var aData = accessSheet.getDataRange().getValues();
+      var aH = aData[0].map(function(h) { return String(h).trim().toLowerCase(); });
+      var eCol = aH.indexOf('email'); var nCol = aH.indexOf('nickname'); var nmCol = aH.indexOf('name');
+      for (var i = 1; i < aData.length; i++) {
+        if (String(aData[i][eCol] || '').toLowerCase().trim() === mgrEmail.toLowerCase().trim()) {
+          mgrName = String(aData[i][nCol] || aData[i][nmCol] || '').trim() || mgrName; break;
+        }
+      }
+    }
+    subject = '[TEST] ' + subject.replace(/\{month\}/g, moName).replace(/\{year\}/g, moYear).replace(/\{name\}/g, mgrName);
+    bodyText = bodyText.replace(/\{month\}/g, moName).replace(/\{year\}/g, moYear).replace(/\{name\}/g, mgrName);
+    var pdfHtml = '<!DOCTYPE html><html><head><meta charset="utf-8"><style>';
+    pdfHtml += 'body{font-family:Arial,Helvetica,sans-serif;margin:20px;color:#1e293b;font-size:12px;line-height:1.5} td{vertical-align:top} table{border-collapse:collapse}';
+    pdfHtml += '</style></head><body>' + htmlContent + '</body></html>';
+    var blob = Utilities.newBlob(pdfHtml, 'text/html', 'report.html').getAs('application/pdf');
+    blob.setName('TEST_Quality_Report_' + mgrName.replace(/[^a-zA-Z0-9]/g,'_') + '_' + moName + '_' + moYear + '.pdf');
+    var noteBody = '<div style="font-family:Arial,sans-serif;font-size:13px;color:#92400e;background:#fffbeb;border:1px solid #fcd34d;border-radius:8px;padding:10px 14px;margin-bottom:14px"><b>TEST PREVIEW</b> &mdash; this is how the report for <b>' + mgrName + '</b> will look. It was NOT sent to the manager.</div>';
+    GmailApp.sendEmail(testTo, subject, bodyText.replace(/\n/g, '\n'), {
+      htmlBody: noteBody + '<div style="font-family:Arial,sans-serif;font-size:14px;color:#333;line-height:1.6">' + bodyText.replace(/\n/g, '<br>') + '</div>',
+      attachments: [blob]
+    });
+    return { success: true, to: testTo };
+  } catch(e) { return { error: e.message }; }
+}
+
+// Build a Google Sheet report: "KPI+QA Goals" + "Cost estimate"
+function createKpiQaReport(payload) {
+  try {
+    payload = payload || {};
+    var dept = String(payload.dept || 'VIP International');
+    var moName = String(payload.monthName || '');
+    var year = String(payload.year || '');
+    var title = 'KPI & QA Report \u2014 ' + moName + ' ' + year + ' \u2014 ' + dept;
+    var ss = SpreadsheetApp.create(title);
+
+    var nameMap = {};
+    try {
+      var acc = SpreadsheetApp.getActiveSpreadsheet().getSheetByName('ACCESS');
+      if (acc) {
+        var ad = acc.getDataRange().getValues();
+        var ah = ad[0].map(function(h) { return String(h).trim().toLowerCase(); });
+        var eC = ah.indexOf('email'), fC = ah.indexOf('full_name'), nC = ah.indexOf('nickname'), nmC = ah.indexOf('name');
+        for (var i = 1; i < ad.length; i++) {
+          var em = String(ad[i][eC] || '').toLowerCase().trim();
+          if (!em) continue;
+          nameMap[em] = {
+            full_name: fC >= 0 ? String(ad[i][fC] || '').trim() : '',
+            nickname: nC >= 0 ? String(ad[i][nC] || '').trim() : (nmC >= 0 ? String(ad[i][nmC] || '').trim() : '')
+          };
+        }
+      }
+    } catch (e) {}
+
+    // ===== Sheet 1: KPI+QA Goals (structured) =====
+    var s1 = ss.getSheets()[0];
+    s1.setName('KPI+QA Goals');
+    s1.getRange(1, 1, 1, 2).merge();
+    s1.getRange(1, 1).setValue(dept + '  \u2014  ' + moName + ' ' + year + '  \u2014  KPI & QA Goals')
+      .setFontSize(14).setFontWeight('bold').setFontColor('#ffffff').setHorizontalAlignment('center');
+    s1.getRange(1, 1, 1, 2).setBackground('#10b981');
+    s1.setRowHeight(1, 36);
+
+    var model = payload.goalsModel || [];
+    var r = 3;
+    model.forEach(function(item) {
+      var kind = item.kind;
+      if (kind === 'blank') { r++; return; }
+      var a = String(item.a == null ? '' : item.a);
+      var b = String(item.b == null ? '' : item.b);
+      var cell = s1.getRange(r, 1);
+      if (kind === 'manager') {
+        s1.getRange(r, 1, 1, 2).merge();
+        cell.setValue('\uD83D\uDC64  ' + a + '   \u2022   ' + b)
+          .setFontWeight('bold').setFontSize(12).setFontColor('#ffffff').setBackground('#334155');
+        s1.setRowHeight(r, 28);
+      } else if (kind === 'section') {
+        s1.getRange(r, 1, 1, 2).merge();
+        cell.setValue(a).setFontWeight('bold').setFontColor('#1e293b').setBackground('#e0e7ff');
+      } else if (kind === 'block') {
+        cell.setValue('\u2605  ' + a).setFontWeight('bold').setBackground('#f1f5f9');
+        s1.getRange(r, 2).setValue(b).setFontWeight('bold').setHorizontalAlignment('right').setBackground('#f1f5f9');
+      } else {
+        cell.setValue('      \u2022 ' + a).setFontColor('#475569');
+        s1.getRange(r, 2).setValue(b).setHorizontalAlignment('right');
+      }
+      r++;
+    });
+    s1.setColumnWidth(1, 520);
+    s1.setColumnWidth(2, 160);
+    s1.setFrozenRows(1);
+    if (s1.getMaxColumns() > 2) s1.deleteColumns(3, s1.getMaxColumns() - 2);
+    if (s1.getMaxRows() > r + 1) s1.deleteRows(r + 1, s1.getMaxRows() - r - 1);
+
+    // ===== Sheet 2: Cost estimate =====
+    var s2 = ss.insertSheet('Cost estimate');
+    var costList = payload.costList || [];
+    var ch = ['\u041F\u0440\u0456\u0437\u0432\u0438\u0449\u0435', '\u0406\u043C\u02BC\u044F', '\u041F\u043E \u0431\u0430\u0442\u044C\u043A\u043E\u0432\u0456', 'Nickname', 'Email', 'KPI Bonus ($)', 'QA Bonus ($)', '\u0420\u0430\u0437\u043E\u043C ($)'];
+    var ncols = ch.length;
+    s2.getRange(1, 1, 1, ncols).merge();
+    s2.getRange(1, 1).setValue(dept + '  \u2014  Cost estimate (bonus payouts)')
+      .setFontSize(14).setFontWeight('bold').setFontColor('#ffffff').setHorizontalAlignment('center');
+    s2.getRange(1, 1, 1, ncols).setBackground('#7c3aed');
+    s2.setRowHeight(1, 34);
+    s2.getRange(2, 1, 1, ncols).merge();
+    s2.getRange(2, 1).setValue('Period: ' + moName + ' ' + year)
+      .setFontWeight('bold').setHorizontalAlignment('center').setBackground('#f5f3ff');
+    s2.getRange(4, 1, 1, ncols).setValues([ch]).setFontWeight('bold')
+      .setBackground('#f5f3ff').setBorder(true, true, true, true, true, true);
+
+    var rows = [];
+    costList.forEach(function(c) {
+      var info = nameMap[String(c.email || '').toLowerCase()] || {};
+      var pib = info.full_name || c.name || '';
+      var parts = String(pib).trim().split(/\s+/);
+      var surname = parts[0] || '', first = parts[1] || '', patr = parts.slice(2).join(' ') || '';
+      var nick = info.nickname || c.nickname || '';
+      rows.push([surname, first, patr, nick, c.email || '', (parseFloat(c.kpiBonus) || 0), (parseFloat(c.qaBonus) || 0), (parseFloat(c.total) || 0)]);
+    });
+    if (rows.length) {
+      s2.getRange(5, 1, rows.length, ncols).setValues(rows).setBorder(true, true, true, true, true, true);
+      var totalSum = 0;
+      rows.forEach(function(rr) { totalSum += (parseFloat(rr[ncols - 1]) || 0); });
+      var tr = 5 + rows.length;
+      s2.getRange(tr, 1, 1, ncols - 1).merge();
+      s2.getRange(tr, 1).setValue('TOTAL').setFontWeight('bold').setHorizontalAlignment('right').setBackground('#fef3c7');
+      s2.getRange(tr, ncols).setValue(totalSum).setFontWeight('bold').setBackground('#fef3c7');
+      s2.getRange(tr, 1, 1, ncols).setBorder(true, true, true, true, true, true);
+      s2.getRange(5, ncols - 2, rows.length + 1, 3).setNumberFormat('$#,##0.00');
+    }
+    s2.setFrozenRows(4);
+    for (var c2 = 1; c2 <= ncols; c2++) { s2.autoResizeColumn(c2); }
+    if (s2.getMaxColumns() > ncols) s2.deleteColumns(ncols + 1, s2.getMaxColumns() - ncols);
+
+    return { success: true, url: ss.getUrl(), id: ss.getId() };
   } catch(e) { return { error: e.message }; }
 }
 
@@ -8911,7 +9347,6 @@ function getProfilingFieldOverrides() {
     obj.sectionIcons = obj.sectionIcons || {};
     return obj;
   } catch (e) {
-    Logger.log('getProfilingFieldOverrides ERROR: ' + e);
     return { fields: {}, sectionOrder: [], fieldOrder: {}, sectionIcons: {} };
   }
 }
@@ -8939,10 +9374,8 @@ function saveProfilingFieldOverrides(cfgObj) {
     // Write chunks down column A
     sh.getRange(1, 1, chunks.length, 1).setValues(chunks);
     
-    Logger.log('saveProfilingFieldOverrides: ' + json.length + ' chars in ' + chunks.length + ' chunks');
     return { success: true, size: json.length, chunks: chunks.length };
   } catch (e) {
-    Logger.log('saveProfilingFieldOverrides ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -8996,6 +9429,7 @@ function addProfilingColumn(params) {
       section: params.section || 'General',
       preview: !!params.preview,
       starred: !!params.starred,
+      filterable: !!params.filterable,
       options: params.options || null,
       defaultValue: params.defaultValue || '',
       allowAdd: !!params.allowAdd,
@@ -9012,7 +9446,6 @@ function addProfilingColumn(params) {
 
     return { success: true, columnIndex: newColIdx };
   } catch (e) {
-    Logger.log('addProfilingColumn ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9049,7 +9482,6 @@ function deleteProfilingColumn(fieldKey) {
 
     return { success: true };
   } catch (e) {
-    Logger.log('deleteProfilingColumn ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9094,7 +9526,6 @@ function renameProfilingColumn(oldKey, newKey) {
 
     return { success: true };
   } catch (e) {
-    Logger.log('renameProfilingColumn ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9132,7 +9563,6 @@ function applyProfilingValidation(fieldKey, options, allowAdd) {
     }
     return { success: true };
   } catch (e) {
-    Logger.log('applyProfilingValidation ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9156,6 +9586,7 @@ function _applyProfilingOverrides(fieldConfig) {
       if (ov.section !== undefined && ov.section !== null && ov.section !== '') fieldConfig[key].section = ov.section;
       if (ov.preview !== undefined) fieldConfig[key].preview = !!ov.preview;
       if (ov.starred !== undefined) fieldConfig[key].starred = !!ov.starred;
+      if (ov.filterable !== undefined) fieldConfig[key].filterable = !!ov.filterable;
       if (ov.defaultValue !== undefined) fieldConfig[key].defaultValue = ov.defaultValue;
       if (ov.allowAdd !== undefined) fieldConfig[key].allowAdd = !!ov.allowAdd;
       if (ov.multiselect !== undefined) fieldConfig[key].multiselect = !!ov.multiselect;
@@ -9210,7 +9641,6 @@ function _applyProfilingOverrides(fieldConfig) {
       fieldConfig._layouts = cfg.layouts;
     }
   } catch (e) {
-    Logger.log('_applyProfilingOverrides ERROR: ' + e);
   }
 }
 
@@ -9265,7 +9695,6 @@ function applyProfilingValidationsBatch(map) {
     }
     return { success: true, applied: applied };
   } catch (e) {
-    Logger.log('applyProfilingValidationsBatch ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9339,7 +9768,6 @@ function applyProfilingDefaults(defaults) {
             totalUpdated++;
           } catch (cellErr) {
             // Validation rejected this cell → skip it but keep going for others
-            Logger.log('applyProfilingDefaults: cell ' + (r + 2) + 'x' + col + ' rejected: ' + cellErr);
           }
         }
       }
@@ -9347,7 +9775,6 @@ function applyProfilingDefaults(defaults) {
 
     return { success: true, updated: totalUpdated, skipped: skipped };
   } catch (e) {
-    Logger.log('applyProfilingDefaults ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9402,7 +9829,6 @@ function getProfilingBanners() {
     if (!Array.isArray(arr)) return [];
     return arr;
   } catch (e) {
-    Logger.log('getProfilingBanners ERROR: ' + e);
     return [];
   }
 }
@@ -9428,7 +9854,6 @@ function saveProfilingBanners(banners) {
     sh.getRange(1, 1).setValue(JSON.stringify(clean));
     return { success: true, count: clean.length };
   } catch (e) {
-    Logger.log('saveProfilingBanners ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9474,7 +9899,6 @@ function importLegacyAttentionToBanners() {
 
     return { success: true, added: added, total: existing.length, banners: existing };
   } catch (e) {
-    Logger.log('importLegacyAttentionToBanners ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9494,7 +9918,6 @@ function removeAutoNewcomerBanner() {
     }
     return { success: true, removed: false, banners: banners };
   } catch (e) {
-    Logger.log('removeAutoNewcomerBanner ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9535,7 +9958,6 @@ function _findJiraFieldKey_() {
 
     return '';
   } catch (e) {
-    Logger.log('_findJiraFieldKey_ ERROR: ' + e);
     return '';
   }
 }
@@ -9583,7 +10005,6 @@ function getProfilingTypeTabs() {
     var arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
   } catch (e) {
-    Logger.log('getProfilingTypeTabs ERROR: ' + e);
     return [];
   }
 }
@@ -9612,7 +10033,6 @@ function saveProfilingTypeTabs(tabs) {
     sh.getRange(1, 1).setValue(JSON.stringify(clean));
     return { success: true, count: clean.length };
   } catch (e) {
-    Logger.log('saveProfilingTypeTabs ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9668,7 +10088,6 @@ function seedDefaultTypeTabs() {
     saveProfilingTypeTabs(defaults);
     return { success: true, seeded: true, count: defaults.length, tabs: defaults };
   } catch (e) {
-    Logger.log('seedDefaultTypeTabs ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9702,7 +10121,6 @@ function getProfilingSettings() {
     var obj = JSON.parse(raw);
     return (typeof obj === 'object' && obj) ? obj : {};
   } catch (e) {
-    Logger.log('getProfilingSettings ERROR: ' + e);
     return {};
   }
 }
@@ -9738,7 +10156,6 @@ function saveProfilingSettings(settings) {
     sh.getRange(1, 1).setValue(JSON.stringify(clean));
     return { success: true, settings: clean };
   } catch (e) {
-    Logger.log('saveProfilingSettings ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9785,7 +10202,6 @@ function getProfilingManagerTabs() {
     var arr = JSON.parse(raw);
     return Array.isArray(arr) ? arr : [];
   } catch (e) {
-    Logger.log('getProfilingManagerTabs ERROR: ' + e);
     return [];
   }
 }
@@ -9810,7 +10226,6 @@ function saveProfilingManagerTabs(tabs) {
     sh.getRange(1, 1).setValue(JSON.stringify(clean));
     return { success: true, count: clean.length };
   } catch (e) {
-    Logger.log('saveProfilingManagerTabs ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9847,7 +10262,6 @@ function seedDefaultManagerTabs() {
     saveProfilingManagerTabs(defaults);
     return { success: true, seeded: true, count: defaults.length, tabs: defaults };
   } catch (e) {
-    Logger.log('seedDefaultManagerTabs ERROR: ' + e);
     return { success: false, error: e.message };
   }
 }
@@ -9875,14 +10289,12 @@ function sendNotificationWebhook(url, payload) {
     });
     var status = response.getResponseCode();
     var text = response.getContentText();
-    Logger.log('Notification webhook → ' + url + ' | status=' + status + ' | resp=' + text);
     if (status >= 200 && status < 300) {
       return { success: true, status: status, response: text };
     } else {
       return { success: false, status: status, error: 'HTTP ' + status + ': ' + text.substring(0, 200) };
     }
   } catch (e) {
-    Logger.log('sendNotificationWebhook ERROR: ' + e);
     return { success: false, error: String(e && e.message ? e.message : e) };
   }
 }
@@ -9909,7 +10321,6 @@ function getNotifPages() {
                       });
     return { pages: clean };
   } catch (e) {
-    Logger.log('getNotifPages ERROR: ' + e);
     return { pages: [], error: String(e) };
   }
 }
@@ -9926,10 +10337,8 @@ function saveNotifPages(pages) {
                        };
                      });
     PropertiesService.getDocumentProperties().setProperty('NOTIF_PAGES', JSON.stringify(clean));
-    Logger.log('saveNotifPages: stored ' + clean.length + ' page(s)');
     return { success: true, count: clean.length };
   } catch (e) {
-    Logger.log('saveNotifPages ERROR: ' + e);
     return { success: false, error: String(e && e.message ? e.message : e) };
   }
 }
@@ -9984,17 +10393,12 @@ function migrationAudit() {
   var profData = s.profSheet.getDataRange().getValues();
   var gdData = s.gdSheet.getDataRange().getValues();
   
-  Logger.log('═══ MIGRATION AUDIT ═══');
-  Logger.log('PROFILING rows: ' + (profData.length - 1));
-  Logger.log('GD rows: ' + (gdData.length - 1));
   
   var profHeaders = profData[0].map(function(h){ return String(h || '').trim(); });
   var gdHeaders = gdData[0].map(function(h){ return String(h || '').trim(); });
   var profIdCol = _migFindIdCol(profHeaders);
   var gdIdCol = _migFindIdCol(gdHeaders);
   
-  Logger.log('PROFILING id column: ' + (profIdCol === -1 ? '❌ NOT FOUND' : profHeaders[profIdCol] + ' (col ' + (profIdCol + 1) + ')'));
-  Logger.log('GD id column:        ' + (gdIdCol === -1 ? '❌ NOT FOUND' : gdHeaders[gdIdCol] + ' (col ' + (gdIdCol + 1) + ')'));
   if (profIdCol === -1 || gdIdCol === -1) { Logger.log('❌ ABORT — id column missing'); return; }
   
   // Build GD id map
@@ -10012,18 +10416,11 @@ function migrationAudit() {
     if (gdIds[pid]) matched++;
     else unmatched.push(pid + ' (row ' + (p + 1) + ')');
   }
-  Logger.log('');
-  Logger.log('✅ Matched by id: ' + matched);
-  Logger.log('❌ Unmatched: ' + unmatched.length);
   if (unmatched.length > 0 && unmatched.length <= 20) {
-    Logger.log('   ' + unmatched.join(', '));
   } else if (unmatched.length > 20) {
-    Logger.log('   First 20: ' + unmatched.slice(0, 20).join(', '));
   }
   
   // Column conflicts
-  Logger.log('');
-  Logger.log('═══ COLUMN CHECK ═══');
   var gdHeadersLower = gdHeaders.map(function(h){ return h.toLowerCase(); });
   var toAdd = [], conflicts = [], missingInProf = [];
   MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
@@ -10039,24 +10436,16 @@ function migrationAudit() {
     }
   });
   
-  Logger.log('Columns to ADD to GD (' + toAdd.length + '):');
   toAdd.forEach(function(c){ Logger.log('  + ' + c); });
   
   if (conflicts.length > 0) {
-    Logger.log('');
-    Logger.log('⚠️ Columns already exist in GD (' + conflicts.length + ') — values will be OVERWRITTEN:');
     conflicts.forEach(function(c){ Logger.log('  ⚠ ' + c); });
   }
   
   if (missingInProf.length > 0) {
-    Logger.log('');
-    Logger.log('⚠️ Columns listed in MIGRATION_MANUAL_COLUMNS but NOT in PROFILING (' + missingInProf.length + ') — will be skipped:');
     missingInProf.forEach(function(c){ Logger.log('  ⚠ ' + c); });
   }
   
-  Logger.log('');
-  Logger.log('═══ DONE ═══');
-  Logger.log('If all looks good → run migrationDryRun() next.');
 }
 
 /**
@@ -10073,7 +10462,6 @@ function migrationDryRun() {
   var gdIdCol = _migFindIdCol(gdHeaders);
   if (profIdCol === -1 || gdIdCol === -1) { Logger.log('❌ ABORT — id column missing'); return; }
   
-  Logger.log('═══ DRY RUN — first 3 players ═══');
   
   // Map PROFILING column name → index
   var profColIdx = {};
@@ -10088,8 +10476,6 @@ function migrationDryRun() {
   for (var p = 1; p < profData.length && shown < 3; p++) {
     var pid = String(profData[p][profIdCol] || '').trim();
     if (!pid) continue;
-    Logger.log('');
-    Logger.log('▶ Player id: ' + pid);
     MIGRATION_MANUAL_COLUMNS.forEach(function(col) {
       var idx = profColIdx[col];
       if (idx === undefined) return;
@@ -10097,13 +10483,9 @@ function migrationDryRun() {
       if (val === '' || val === null || val === undefined) return;
       var vs = String(val);
       if (vs.length > 60) vs = vs.substring(0, 60) + '…';
-      Logger.log('   ' + col + ' = ' + vs);
     });
     shown++;
   }
-  Logger.log('');
-  Logger.log('═══ DONE ═══');
-  Logger.log('If values look correct → run migrationRun() to perform real migration.');
 }
 
 /**
@@ -10122,7 +10504,6 @@ function migrationRun() {
   var existing = s.ss.getSheetByName(backupName);
   if (existing) s.ss.deleteSheet(existing);
   s.profSheet.copyTo(s.ss).setName(backupName);
-  Logger.log('✅ Backup created: ' + backupName);
   
   var profData = s.profSheet.getDataRange().getValues();
   var gdHeaders = s.gdSheet.getRange(1, 1, 1, Math.max(1, s.gdSheet.getLastColumn())).getValues()[0]
@@ -10146,7 +10527,6 @@ function migrationRun() {
       addedCols.push(col);
     }
   });
-  Logger.log('✅ Added ' + addedCols.length + ' new columns to GD');
   if (addedCols.length > 0) Logger.log('   ' + addedCols.join(', '));
   
   // Refresh GD data after adding columns
@@ -10189,23 +10569,15 @@ function migrationRun() {
       try {
         s.gdSheet.getRange(gdRow, gIdx + 1).setValue(val);
       } catch (e) {
-        Logger.log('⚠ row ' + gdRow + ' col ' + col + ': ' + e);
       }
     });
     matched++;
   }
   
-  Logger.log('');
-  Logger.log('═══ MIGRATION COMPLETE ═══');
-  Logger.log('✅ Migrated: ' + matched + ' players');
-  Logger.log('❌ Unmatched: ' + unmatched);
-  Logger.log('💾 Backup: ' + backupName);
   
   PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATED', 'true');
   PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATION_DATE', stamp);
   PropertiesService.getDocumentProperties().setProperty('PROFILING_BACKUP_NAME', backupName);
-  Logger.log('');
-  Logger.log('Next: run migrationFinalize() to switch app to read/write from GD.');
 }
 
 /**
@@ -10215,8 +10587,6 @@ function migrationRun() {
  */
 function migrationFinalize() {
   PropertiesService.getDocumentProperties().setProperty('PROFILING_SHEET_NAME', 'GENERAL DASHBOARD');
-  Logger.log('✅ App switched to GENERAL DASHBOARD as the profiling sheet.');
-  Logger.log('Reload the web app — all reads/writes will now go to GD.');
 }
 
 /**
@@ -10229,11 +10599,8 @@ function migrationRollback() {
   if (!backupName) { Logger.log('❌ No backup recorded — nothing to roll back to'); return; }
   var backup = ss.getSheetByName(backupName);
   if (!backup) { Logger.log('❌ Backup sheet "' + backupName + '" not found'); return; }
-  Logger.log('Backup exists: ' + backupName);
-  Logger.log('NOTE: This only resets the app sheet pointer. The GD column writes remain.');
   PropertiesService.getDocumentProperties().deleteProperty('PROFILING_SHEET_NAME');
   PropertiesService.getDocumentProperties().setProperty('PROFILING_MIGRATED', 'false');
-  Logger.log('✅ App pointer reset to PROFILING.');
 }
 
 
@@ -10258,13 +10625,11 @@ function migrationRollback() {
 function migrationBuildWhitelist() {
   var backupName = PropertiesService.getDocumentProperties().getProperty('PROFILING_BACKUP_NAME');
   if (!backupName) {
-    Logger.log('❌ No backup recorded — run migrationRun() first');
     return;
   }
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var backup = ss.getSheetByName(backupName);
   if (!backup) {
-    Logger.log('❌ Backup sheet "' + backupName + '" not found');
     return;
   }
   
@@ -10272,18 +10637,13 @@ function migrationBuildWhitelist() {
                       .map(function(h){ return String(h || '').trim(); })
                       .filter(function(h){ return h.length > 0; });
   
-  Logger.log('PROFILING backup has ' + headers.length + ' columns');
   
   // Lowercase for matching
   var whitelist = headers.map(function(h){ return h.toLowerCase(); });
   
   PropertiesService.getDocumentProperties().setProperty('PROFILING_FIELD_WHITELIST', JSON.stringify(whitelist));
   
-  Logger.log('═══ WHITELIST BUILT ═══');
-  Logger.log('Fields shown in profiling app (' + whitelist.length + '):');
   headers.forEach(function(h){ Logger.log('  • ' + h); });
-  Logger.log('');
-  Logger.log('Reload the web app to apply.');
 }
 
 /** Get whitelist as array of lowercased column names. Returns null = no whitelist (show all). */
@@ -10304,4 +10664,35 @@ function _profGetWhitelistSet() {
   var s = {};
   arr.forEach(function(k){ s[k] = true; });
   return s;
+}
+
+/******************** TIMETABLE PTO CONFIG ********************/
+function getPtoConfig() {
+  try {
+    var p = PropertiesService.getScriptProperties().getProperty('TT_PTO_ALLOWANCE');
+    var a = parseInt(p, 10); if (isNaN(a)) a = 20;
+    return { success: true, allowance: a };
+  } catch (e) { return { success: false, error: e.message, allowance: 20 }; }
+}
+function savePtoConfig(allowance) {
+  var lock = LockService.getScriptLock();
+  try {
+    lock.waitLock(8000);
+    var a = parseInt(allowance, 10); if (isNaN(a) || a < 0) a = 20;
+    PropertiesService.getScriptProperties().setProperty('TT_PTO_ALLOWANCE', String(a));
+    return { success: true, allowance: a };
+  } catch (e) {
+    return { success: false, error: e.message };
+  } finally {
+    try { lock.releaseLock(); } catch (e2) {}
+  }
+}
+
+/******************** STARTUP SMALL BUNDLE (cheap always-on calls in 1 round-trip) ********************/
+function getStartupSmallBundle() {
+  var out = {};
+  try { var pm = getPaymentMethods(); out.paymentMethods = (pm && pm.methods) ? pm.methods : []; } catch (e) { out.paymentMethods = []; }
+  try { out.timetable = getTimetableData(); } catch (e) { out.timetable = null; }
+  try { out.ptoConfig = getPtoConfig(); } catch (e) { out.ptoConfig = null; }
+  return out;
 }
